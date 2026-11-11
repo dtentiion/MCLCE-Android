@@ -1,0 +1,285 @@
+// Flat settings store keyed by mcle_setting. Persists to settings.dat in
+// the game files folder on every set, like console's Win64_SaveSettings
+// write-on-change pattern (Common/Consoles_App.cpp:792).
+
+#include "MCLE_iOS_Settings.h"
+#include "STO_iOS_Paths.h"
+
+#include <android/log.h>
+
+#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "mcle", __VA_ARGS__)
+
+#include <atomic>
+#include <mutex>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <sys/stat.h>
+
+namespace {
+
+// MAX_FAVORITE_SKINS (Common/App_Defines.h)
+const int kMaxFavoriteSkins = 10;
+
+// The GAME_SETTINGS skin fields
+struct SkinSettings {
+    uint32_t selectedSkin;
+    uint32_t selectedCape;
+    uint32_t favoriteSkins[kMaxFavoriteSkins];
+    uint8_t favoriteSkinsPos;
+};
+
+// TUTORIAL_PROFILE_STORAGE_BYTES (Common/Tutorial/TutorialEnum.h)
+const int kTutorialCompletionBytes = 512 / 8;
+
+// The GAME_SETTINGS tutorial fields
+struct TutorialSettings {
+    uint8_t completion[kTutorialCompletionBytes];
+    uint32_t specialBitmask;
+};
+
+// The port's own options, which TU19's GAME_SETTINGS doesn't have
+struct PortSettings {
+    uint8_t longerLoading;
+};
+
+std::mutex g_mu;
+unsigned char g_values[MCLE_SETTING_MAX] = {};
+SkinSettings g_skin = {};
+TutorialSettings g_tutorial = {};
+PortSettings g_port = {};
+// GAME_SETTINGS::uiMashUpPackWorldsDisplay
+uint32_t g_mashUpWorlds = 0xFFFFFFFF;
+std::atomic<bool> g_loaded{false};
+
+std::string settings_path() {
+    return std::string(ios_documents_dir()) + "/settings.dat";
+}
+
+// Console defaults from CMinecraftApp::InitGameSettings
+// (Common/Consoles_App.cpp:820+). Any setting not explicitly
+// assigned stays at 0, as console's memset-then-set leaves it.
+void apply_defaults() {
+    // Audio (DEFAULT_VOLUME_LEVEL is 100 on console).
+    g_values[MCLE_SETTING_MusicVolume] = 100;
+    g_values[MCLE_SETTING_SoundFXVolume] = 100;
+
+    // Graphics
+    g_values[MCLE_SETTING_RenderDistance] = 16;         // "Far"
+    g_values[MCLE_SETTING_Gamma] = 50;
+    g_values[MCLE_SETTING_FOV] = 0;                     // slider val 0 -> 70 deg
+    g_values[MCLE_SETTING_Clouds] = 1;
+    g_values[MCLE_SETTING_BedrockFog] = 0;
+    g_values[MCLE_SETTING_CustomSkinAnim] = 1;
+    g_values[MCLE_SETTING_InterfaceOpacity] = 80;
+
+    // Options
+    g_values[MCLE_SETTING_Difficulty] = 1;              // easy (console's default)
+    g_values[MCLE_SETTING_ViewBob] = 1;
+    g_values[MCLE_SETTING_Hints] = 1;
+    g_values[MCLE_SETTING_Tooltips] = 1;
+    g_values[MCLE_SETTING_Autosave] = 2;                // 30 minutes
+
+    // Control
+    g_values[MCLE_SETTING_ControlScheme] = 0;
+    g_values[MCLE_SETTING_ControlInvertLook] = 0;
+    g_values[MCLE_SETTING_ControlSouthPaw] = 0;
+    g_values[MCLE_SETTING_SensitivityInGame] = 100;
+    g_values[MCLE_SETTING_SensitivityInMenu] = 100;
+
+    // UI
+    g_values[MCLE_SETTING_DisplayHUD] = 1;
+    g_values[MCLE_SETTING_DisplayHand] = 1;
+    g_values[MCLE_SETTING_DisplaySplitscreenGamertags] = 1;
+    g_values[MCLE_SETTING_GamertagsVisible] = 1;
+    g_values[MCLE_SETTING_SplitScreenVertical] = 0;
+    g_values[MCLE_SETTING_DeathMessages] = 1;
+    g_values[MCLE_SETTING_AnimatedCharacter] = 1;
+    g_values[MCLE_SETTING_UISize] = 1;
+    g_values[MCLE_SETTING_UISizeSplitscreen] = 2;
+
+    // Network
+    g_values[MCLE_SETTING_Online] = 1;
+    g_values[MCLE_SETTING_InviteOnly] = 0;
+    g_values[MCLE_SETTING_FriendsOfFriends] = 1;
+
+    // TU 12, the favourite skins. The selected skin and cape are left as
+    // they are.
+    g_skin.favoriteSkinsPos = 0;
+    for (int i = 0; i < kMaxFavoriteSkins; i++) {
+        g_skin.favoriteSkins[i] = 0xFFFFFFFF;
+    }
+
+    // TU 13
+    g_mashUpWorlds = 0xFFFFFFFF;
+
+    // Port options start off, the game as TU19 has it
+    g_port.longerLoading = 0;
+}
+
+void save_locked() {
+    const std::string path = settings_path();
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        LOG("[settings] write open failed: %s", path.c_str());
+        return;
+    }
+    std::fwrite(g_values, 1, MCLE_SETTING_MAX, f);
+    std::fwrite(&g_skin, 1, sizeof(g_skin), f);
+    std::fwrite(&g_tutorial, 1, sizeof(g_tutorial), f);
+    std::fwrite(&g_port, 1, sizeof(g_port), f);
+    std::fwrite(&g_mashUpWorlds, 1, sizeof(g_mashUpWorlds), f);
+    std::fclose(f);
+}
+
+} // anon
+
+extern "C" void mcle_settings_load(void) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_loaded.load()) return;
+    apply_defaults();
+
+    const std::string path = settings_path();
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (f) {
+            unsigned char buf[MCLE_SETTING_MAX + sizeof(SkinSettings) + sizeof(TutorialSettings) +
+                              sizeof(PortSettings) + sizeof(g_mashUpWorlds)] = {};
+            size_t n = std::fread(buf, 1, sizeof(buf), f);
+            std::fclose(f);
+            // Tolerate shorter files: newer builds may have more
+            // settings than an old settings.dat was written with.
+            // Copy what was read, leave defaults for the rest.
+            if (n > 0) {
+                const size_t skinEnd = MCLE_SETTING_MAX + sizeof(SkinSettings);
+                const size_t tutorialEnd = skinEnd + sizeof(TutorialSettings);
+                std::memcpy(g_values, buf, n < MCLE_SETTING_MAX ? n : MCLE_SETTING_MAX);
+                if (n >= skinEnd) std::memcpy(&g_skin, buf + MCLE_SETTING_MAX, sizeof(g_skin));
+                if (n >= tutorialEnd) std::memcpy(&g_tutorial, buf + skinEnd, sizeof(g_tutorial));
+                const size_t portEnd = tutorialEnd + sizeof(PortSettings);
+                if (n >= portEnd) std::memcpy(&g_port, buf + tutorialEnd, sizeof(g_port));
+                if (n >= portEnd + sizeof(g_mashUpWorlds)) std::memcpy(&g_mashUpWorlds, buf + portEnd, sizeof(g_mashUpWorlds));
+                LOG("[settings] loaded %zu byte(s) from %s", n, path.c_str());
+            }
+        }
+    } else {
+        LOG("[settings] no settings.dat, using console defaults");
+        save_locked();
+    }
+    g_loaded.store(true);
+}
+
+extern "C" unsigned char mcle_settings_get(int setting) {
+    if (setting < 0 || setting >= MCLE_SETTING_MAX) return 0;
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_values[setting];
+}
+
+extern "C" void mcle_settings_set(int setting, unsigned char value) {
+    if (setting < 0 || setting >= MCLE_SETTING_MAX) return;
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_values[setting] == value) return;
+    g_values[setting] = value;
+    save_locked();
+}
+
+extern "C" void mcle_settings_reset_to_defaults(int inGame) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    // SetDefaultOptions doesn't reset the difficulty in game
+    const unsigned char difficulty = g_values[MCLE_SETTING_Difficulty];
+    apply_defaults();
+    if (inGame) g_values[MCLE_SETTING_Difficulty] = difficulty;
+    save_locked();
+    LOG("[settings] reset to defaults (console SetDefaultOptions parity)");
+}
+
+extern "C" unsigned int mcle_settings_get_skin(void) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_skin.selectedSkin;
+}
+
+extern "C" void mcle_settings_set_skin(unsigned int skinId) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_skin.selectedSkin == skinId) return;
+    g_skin.selectedSkin = skinId;
+    save_locked();
+}
+
+extern "C" unsigned int mcle_settings_get_cape(void) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_skin.selectedCape;
+}
+
+extern "C" void mcle_settings_set_cape(unsigned int capeId) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_skin.selectedCape == capeId) return;
+    g_skin.selectedCape = capeId;
+    save_locked();
+}
+
+extern "C" unsigned int mcle_settings_get_favorite_skin(int index) {
+    if (index < 0 || index >= kMaxFavoriteSkins) return 0xFFFFFFFF;
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_skin.favoriteSkins[index];
+}
+
+extern "C" void mcle_settings_set_favorite_skin(int index, unsigned int skinId) {
+    if (index < 0 || index >= kMaxFavoriteSkins) return;
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_skin.favoriteSkins[index] == skinId) return;
+    g_skin.favoriteSkins[index] = skinId;
+    save_locked();
+}
+
+extern "C" unsigned char mcle_settings_get_favorite_skins_pos(void) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_skin.favoriteSkinsPos;
+}
+
+extern "C" void mcle_settings_set_favorite_skins_pos(unsigned char pos) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_skin.favoriteSkinsPos == pos) return;
+    g_skin.favoriteSkinsPos = pos;
+    save_locked();
+}
+
+extern "C" void mcle_settings_get_tutorial(unsigned char *completion, int bytes, unsigned int *special) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    int n = bytes < kTutorialCompletionBytes ? bytes : kTutorialCompletionBytes;
+    if (completion && n > 0) std::memcpy(completion, g_tutorial.completion, n);
+    if (special) *special = g_tutorial.specialBitmask;
+}
+
+extern "C" void mcle_settings_set_tutorial(const unsigned char *completion, int bytes, unsigned int special) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    int n = bytes < kTutorialCompletionBytes ? bytes : kTutorialCompletionBytes;
+    if (completion && n > 0) std::memcpy(g_tutorial.completion, completion, n);
+    g_tutorial.specialBitmask = special;
+    save_locked();
+}
+
+extern "C" unsigned char mcle_settings_get_longer_loading(void) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_port.longerLoading;
+}
+
+extern "C" void mcle_settings_set_longer_loading(unsigned char on) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    on = on ? 1 : 0;
+    if (g_port.longerLoading == on) return;
+    g_port.longerLoading = on;
+    save_locked();
+}
+
+extern "C" unsigned int mcle_settings_get_mashup_worlds(void) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_mashUpWorlds;
+}
+
+extern "C" void mcle_settings_set_mashup_worlds(unsigned int mask) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_mashUpWorlds == mask) return;
+    g_mashUpWorlds = mask;
+    save_locked();
+}

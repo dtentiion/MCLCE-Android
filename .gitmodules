@@ -1,0 +1,3 @@
+[submodule "ios"]
+	path = ios
+	url = https://github.com/dtentiion/MCLCE-iOS.git

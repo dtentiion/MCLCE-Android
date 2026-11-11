@@ -1,0 +1,29 @@
+# Build output
+build/
+build-*/
+.gradle/
+.cxx/
+local.properties
+*.apk
+*.aab
+
+# Rust
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Game files are never part of the repo
+*.arc
+*.swf
+*.pck
+*.ogg
+*.binka

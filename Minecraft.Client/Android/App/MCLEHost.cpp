@@ -1,0 +1,6684 @@
+// The menu host. This is the iOS port's MinecraftViewController.mm brought
+// over function for function: it drives every menu movie through the Ruffle
+// player the way the console's UIController and UIScene classes drive Iggy.
+// What UIKit did for it there is behind MCLEPlatform.h here.
+
+#include "MCLEHost.h"
+#include "MCLEPlatform.h"
+
+#include "RND_iOS_Stub.h"
+#include "MetalContext.h"
+#include "INP_iOS_Bridge.h"
+#include "ruffle_ios.h"
+#include "MCLE_iOS_Audio.h"
+#include "MCLE_iOS_Settings.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLESaveList.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEStrings.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEHud.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLETooltips.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEContainerMenu.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEKeyboard.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLESignEntryMenu.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEInGameInfoMenu.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLETutorialPopup.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLESkinSelectMenu.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEDLC.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEStartGame.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLETexturePacks.h"
+#include "../../../ios/Minecraft.Client/iOS/Game/MCLEPlatformSkin.h"
+#include "../../../ios/upstream/Minecraft.Client/Windows64Media/strings.h"
+#include "../../../ios/upstream/Minecraft.Client/Windows64/Xbox_BuildVer.h"
+
+#include <sys/stat.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
+
+extern "C" void mcle_game_tick(void);  // GameBootstrap.cpp
+extern "C" int  mcle_game_start(const char *levelFolder);   // MCLEGameLoop.cpp
+extern "C" int  mcle_game_load_status(int *percent);        // MCLEGameLoop.cpp
+extern "C" int  mcle_game_load_is_new(void);                // MCLEGameLoop.cpp
+extern "C" int  mcle_game_load_finding_seed(void);          // MCLEGameLoop.cpp
+extern "C" void mcle_minecraft_main(void);                  // MCLEGameLoop.cpp
+extern "C" void mcle_minecraft_init(void);                  // MCLEGameLoop.cpp
+extern "C" int  mcle_level_generators_refresh(void);        // MCLEGameLoop.cpp
+extern "C" const char* mcle_level_generator_name(int i);    // MCLEGameLoop.cpp
+extern "C" int  mcle_game_start_level_gen(int i);           // MCLEGameLoop.cpp
+extern "C" int  mcle_level_generator_is_tutorial(int i);    // MCLEGameLoop.cpp
+extern "C" unsigned int mcle_level_generator_texture_pack(int i);   // MCLEGameLoop.cpp
+extern "C" int  mcle_level_generator_requires_texture_pack(int i);  // MCLEGameLoop.cpp
+extern "C" int  mcle_level_generator_in_creative(int i);    // MCLEGameLoop.cpp
+extern "C" const char* mcle_level_generator_display_name(int i);    // MCLEGameLoop.cpp
+
+// app.GetString(IDS_*)
+static std::string MCLEStr(int ids) {
+    const char* s = mcle_string(ids);
+    return (s && *s) ? std::string(s) : "";
+}
+
+// CMinecraftApp::InitialiseTips + GetNextTip. Skin pack tip first, then
+// the game tips (first one fixed, rest shuffled) with a trivia tip every
+// third slot.
+static int MCLENextTip(void) {
+    static std::vector<int> order;
+    static size_t next = 0;
+    static bool shownSkinTip = false;
+    if (!shownSkinTip) {
+        shownSkinTip = true;
+        return IDS_TIPS_GAMETIP_SKINPACKS;
+    }
+    if (order.empty()) {
+        std::vector<int> game = { IDS_TIPS_GAMETIP_1, IDS_TIPS_GAMETIP_2, IDS_TIPS_GAMETIP_3, IDS_TIPS_GAMETIP_4, IDS_TIPS_GAMETIP_5, IDS_TIPS_GAMETIP_6, IDS_TIPS_GAMETIP_7, IDS_TIPS_GAMETIP_8, IDS_TIPS_GAMETIP_9, IDS_TIPS_GAMETIP_10, IDS_TIPS_GAMETIP_11, IDS_TIPS_GAMETIP_12, IDS_TIPS_GAMETIP_13, IDS_TIPS_GAMETIP_14, IDS_TIPS_GAMETIP_15, IDS_TIPS_GAMETIP_16, IDS_TIPS_GAMETIP_17, IDS_TIPS_GAMETIP_18, IDS_TIPS_GAMETIP_19, IDS_TIPS_GAMETIP_20, IDS_TIPS_GAMETIP_21, IDS_TIPS_GAMETIP_22, IDS_TIPS_GAMETIP_23, IDS_TIPS_GAMETIP_24, IDS_TIPS_GAMETIP_25, IDS_TIPS_GAMETIP_26, IDS_TIPS_GAMETIP_27, IDS_TIPS_GAMETIP_28, IDS_TIPS_GAMETIP_29, IDS_TIPS_GAMETIP_30, IDS_TIPS_GAMETIP_31, IDS_TIPS_GAMETIP_32, IDS_TIPS_GAMETIP_33, IDS_TIPS_GAMETIP_34, IDS_TIPS_GAMETIP_35, IDS_TIPS_GAMETIP_36, IDS_TIPS_GAMETIP_37, IDS_TIPS_GAMETIP_38, IDS_TIPS_GAMETIP_39, IDS_TIPS_GAMETIP_40, IDS_TIPS_GAMETIP_41, IDS_TIPS_GAMETIP_42, IDS_TIPS_GAMETIP_43, IDS_TIPS_GAMETIP_44, IDS_TIPS_GAMETIP_45, IDS_TIPS_GAMETIP_46, IDS_TIPS_GAMETIP_47, IDS_TIPS_GAMETIP_48, IDS_TIPS_GAMETIP_49, IDS_TIPS_GAMETIP_50 };
+        std::vector<int> trivia = { IDS_TIPS_TRIVIA_1, IDS_TIPS_TRIVIA_2, IDS_TIPS_TRIVIA_3, IDS_TIPS_TRIVIA_4, IDS_TIPS_TRIVIA_5, IDS_TIPS_TRIVIA_6, IDS_TIPS_TRIVIA_7, IDS_TIPS_TRIVIA_8, IDS_TIPS_TRIVIA_9, IDS_TIPS_TRIVIA_10, IDS_TIPS_TRIVIA_11, IDS_TIPS_TRIVIA_12, IDS_TIPS_TRIVIA_13, IDS_TIPS_TRIVIA_14, IDS_TIPS_TRIVIA_15, IDS_TIPS_TRIVIA_16, IDS_TIPS_TRIVIA_17, IDS_TIPS_TRIVIA_18, IDS_TIPS_TRIVIA_19, IDS_TIPS_TRIVIA_20 };
+        for (size_t i = game.size() - 1; i > 1; --i) std::swap(game[i], game[1 + arc4random_uniform((uint32_t)i)]);
+        for (size_t i = trivia.size() - 1; i > 0; --i) std::swap(trivia[i], trivia[arc4random_uniform((uint32_t)(i + 1))]);
+        size_t g = 0, t = 0;
+        for (size_t i = 0; i < game.size() + trivia.size(); ++i) {
+            if (i % 3 == 2 && t < trivia.size()) order.push_back(trivia[t++]);
+            else if (g < game.size()) order.push_back(game[g++]);
+            else order.push_back(trivia[t++]);
+        }
+    }
+    if (next >= order.size()) next = 0;
+    return order[next++];
+}
+
+// UIScene_LoadMenu state the bridge and the loading screen need.
+static int  g_load_save_index = -1;
+// UIScene_LoadMenu::m_levelGen, a mash-up pack's world in place of a save.
+// -1 for none.
+static int  g_load_level_gen = -1;
+// UIScene_LoadOrJoinMenu::m_iDefaultButtonsC: Create New World and the level
+// generators come before the saves
+static int  g_load_default_buttons = 1;
+// m_iMashUpButtonsC, the mash-up pack worlds among them
+static int  g_load_mashup_buttons = 0;
+// UIScene_LoadOrJoinMenu's m_iSaveListIndex and m_bIgnoreInput, and the
+// control UIScene has the focus on (m_iFocusControl)
+static int  g_load_save_list_index = 0;
+static int  g_load_focus_control = -1;
+static bool g_load_or_join_ignore_input = false;
+static int  g_load_game_mode = 0;              // GameType id: 0 survival, 1 creative, 2 adventure
+std::wstring mcle_format_html_string(int iPad, const std::wstring& desc); // Game/MCLEHowToPlay.cpp
+
+static std::string MCLELoadGameModeLabel(void) {
+    switch (g_load_game_mode) {
+        case 1:  return MCLEStr(IDS_GAMEMODE_CREATIVE);
+        case 2:  return MCLEStr(IDS_GAMEMODE_ADVENTURE);
+        default: return MCLEStr(IDS_GAMEMODE_SURVIVAL);
+    }
+}
+static bool g_load_has_been_in_creative = false;
+static bool g_load_is_save_owner = true;       // m_bIsSaveOwner
+// Opened from the save list, not come back to from More Options
+static bool g_load_menu_fresh = false;
+static bool g_loading_world = false;
+// IUIScene_StartGame::m_MoreOptionsParams of the LoadMenu or CreateWorldMenu
+// that's up. LaunchMoreOptionsMenu changes it.
+static MCLELaunchMoreOptions g_start_options;
+// UIScene_CreateWorldMenu. It stays alive under LaunchMoreOptionsMenu.
+static std::string g_create_world_name = "";   // m_worldName
+static int  g_create_game_mode_id = 0;         // m_iGameModeId
+static bool g_create_game_mode_creative = false;
+static bool g_create_ignore_input = false;
+// IUIScene_StartGame's texture pack list on the LoadMenu or CreateWorldMenu:
+// m_currentTexturePackIndex, m_texturePackDescDisplayed, and m_bIgnoreInput
+// while the DLC packs it lists are still being mounted
+static int  g_texture_pack_index = 0;
+static bool g_texture_pack_desc_displayed = false;
+static bool g_texture_pack_waiting_for_dlc = false;
+// UIScene_LaunchMoreOptionsMenu: m_tabIndex, 0 world options, 1 game options
+static int  g_more_options_tab = 0;
+static bool g_more_options_ignore_input = false;
+static void MCLEMoreOptionsTooltips(void);
+// UIScene_PauseMenu is up and the single player game is paused under it
+static bool g_world_paused = false;
+// UIScene_DeathMenu is up
+static bool g_world_dead = false;
+// A container menu (UIScene_InventoryMenu) is up over the running world
+static bool g_world_container = false;
+// A container scene's movie is going back up for its reloadMovie, after the
+// scene that was over it went
+static bool g_container_reloading = false;
+// The same for a front end menu, after the keyboard over it went
+static bool g_menu_reloading = false;
+// The container scenes up are UIScene_InGameInfoMenu's, which isn't a
+// container menu or one that holds off the autosave
+static bool g_world_info = false;
+static bool MCLELabelAt(const char* path, std::wstring* label);
+// Exit Game: FullscreenProgress is up while the world is torn down
+static bool g_exiting_world = false;
+// UIScene_ConnectingProgress is up while the player changes level, until the
+// change it waits for is done (and the respawn, after the End poem)
+static bool g_world_connecting = false;
+static bool g_connecting_respawn = false;
+static int g_level_changes_seen = 0;
+static int g_respawns_seen = 0;
+// UIScene_EndPoem is up after the End's exit portal
+static bool g_world_won = false;
+static int g_wins_seen = 0;
+// UIScene_FullscreenProgress is up while the server saves, for the pause
+// menu's Save or an autosave, over the game (0), the pause menu (1) or the
+// in game info menu (2)
+static bool g_world_saving = false;
+static bool g_saving_autosave = false;
+static int g_saving_over = 0;
+// UIScene_EndPoem's m_requestedLabel and m_bIgnoreInput
+static std::atomic<int> g_endpoem_requested{-1};
+static bool g_endpoem_ignore_input = false;
+extern "C" int  mcle_game_level_changes(int *finished, int *stringId); // MCLEGameLoop.cpp
+extern "C" int  mcle_game_wins(void);                // MCLEGameLoop.cpp
+extern "C" int  mcle_game_respawns(void);            // MCLEGameLoop.cpp
+extern "C" void mcle_end_poem_init(void);            // MCLEEndPoem.cpp
+extern "C" int  mcle_end_poem_paragraph_count(void); // MCLEEndPoem.cpp
+extern "C" const char *mcle_end_poem_paragraph(int index); // MCLEEndPoem.cpp
+extern "C" void mcle_end_poem_input(unsigned int buttons, unsigned int prevButtons,
+                                    void (*sendKey)(int iggyKeyCode, int down)); // MCLEEndPoem.cpp
+extern "C" int mcle_game_exit_world(int save);
+extern "C" int mcle_game_exit_world_done(void);
+
+static void MCLESelectSaveSize(int saveIndex);
+static void MCLELoadOrJoinFocusChange(int controlId, int childId);
+static void MCLELoadOrJoinTooltips(void);
+extern "C" int  mcle_world_is_ticking(void);  // MCLEGameLoop.cpp
+extern "C" void mcle_render_frame(void);      // RND_iOS_Metal.mm
+extern "C" void mcle_metal_add_phase_ms(int phase, double ms);
+extern "C" void mcle_metal_set_gamma(float gamma); // MetalContext.mm
+extern "C" void mcle_metal_attach_ui_layer(void* ca_metal_layer, int width, int height); // MetalContext.mm
+extern "C" void mcle_game_set_paused(int paused);   // MCLEGameLoop.cpp
+extern "C" int  mcle_player_is_dead(void);           // MCLEGameLoop.cpp
+extern "C" void mcle_game_respawn(void);             // MCLEGameLoop.cpp
+extern "C" int  mcle_world_game_time(long long *gameTime, int *dimension); // MCLEGameLoop.cpp
+extern "C" int  mcle_game_save(int autosave);        // MCLEGameLoop.cpp
+extern "C" int  mcle_game_save_done(void);           // MCLEGameLoop.cpp
+extern "C" void mcle_game_progress(int reset, int *title, int *status, int *percent); // MCLEGameLoop.cpp
+extern "C" void mcle_storage_set_save_folder(const char *folder); // MCLESaveList.cpp
+extern "C" int mcle_storage_save_exists(void); // MCLESaveList.cpp
+extern "C" void mcle_capture_save_thumbnail(void);   // MCLESaveList.cpp
+extern "C" void mcle_game_host_settings_changed(void); // MCLEGameLoop.cpp
+void mcle_sound_update_music_volume(float v);          // MCLESound.cpp
+void mcle_sound_update_sfx_volume(float v);
+extern "C" int  mcle_metal_thumbnail_pending(void);  // MetalContext.mm
+
+// The eAppAction_*CapturedThumbnail step: Minecraft::run takes the save's
+// thumbnail from the next world frame, then the save or the exit goes ahead
+static std::function<void()> g_after_thumbnail = nullptr;
+static int g_after_thumbnail_frames = 0;
+static void MCLECaptureThumbnailThen(std::function<void()> then) {
+    std::function<void()> before = g_after_thumbnail;
+    g_after_thumbnail = before ? std::function<void()>([=] { before(); then(); }) : then;
+    g_after_thumbnail_frames = 0;
+    mcle_capture_save_thumbnail();
+}
+
+// Name of the currently loaded menu SWF, set each time a
+// new scene loads. The settings-event bridge reads this to decide which
+// scene's control-id -> MCLE_SETTING_* mapping to use, without
+// holding a reference to the view controller itself.
+static std::string g_current_scene_name = "";
+
+// Pending dialog request: seeded by presentDialog..., consumed by
+// populateMessageBoxSibling once MessageBox1080.swf is attached as
+// a stage sibling, fired by the extint bridge on button press or
+// by the B-back handler as a cancellation. While this is non-nil
+// the iOS-side menu state machine is suppressed and B / handlePress
+// route through the dialog instead of the underlying scene.
+// Mirrors console's MessageBoxInfo that
+// UIController::RequestMessageBox stashes when navigating to
+// eUIScene_MessageBox (UIController.cpp:2951-2994).
+struct MCLEDialogRequest {
+    std::string title;
+    std::string content;
+    std::vector<std::string> buttonLabels;  // filled end-first per MessageBox.as:47
+    int focusIndex = 0;
+    MCLEDialogCallback callback;
+};
+
+static std::shared_ptr<MCLEDialogRequest> g_pending_dialog = nullptr;
+
+// UIScene::m_iFocusControl and m_iFocusChild, where the scene's movie last
+// put its focus, and the same for a message box over it. -1 until it has.
+static int g_scene_focus_control = -1;
+static int g_scene_focus_child = -1;
+static int g_dialog_focus_control = -1;
+static int g_dialog_focus_child = -1;
+// Set while a scene is put back as it was, which isn't the player moving
+// the focus
+static bool g_focus_restoring = false;
+
+// UIController::PlayUISFX: one sound a tick at most, and the focus sound's
+// pitch varies a little
+static void MCLEPlayUISFX(const char* sound) {
+    static double s_last = 0;
+    const double now = host::now();
+    if (now - s_last < 0.010) return;
+    s_last = now;
+    float pitch = 1.0f;
+    if (strcmp(sound, "focus") == 0) {
+        pitch += ((float)arc4random_uniform(1000) / 1000.0f - 0.5f) / 10.0f;
+    }
+    mcle_audio_play_ui_sfx(sound, 1.0f, pitch);
+}
+
+// Stage-sibling depth assignments. Stack is back-to-front:
+//   -2  Panorama
+//    0  root scene (the active menu SWF)
+//  101  Logo (ComponentLogo1080.swf)
+//  199  MenuBackground (the dim overlay, hidden by default,
+//       shown while a dialog is up). Sits ABOVE the logo so
+//       the dim covers it, as MessageBox's
+//       addComponent(eUIComponent_MenuBackground) darkens
+//       everything underneath including the logo.
+//  200  MessageBox dialog (sibling, only when dialog up)
+//  201  Tooltips bottom strip - lives above the dialog so
+//       Select / Cancel stay readable while the dim is up.
+//       The strip is at the bottom of the screen so it doesn't
+//       visually overlap the dialog panel.
+static const int kLogoDepth        = 101;
+static const int kDimDepth         = 199;
+// The in-game menus' MenuBackground, under the scene like UILayer draws
+// its components before its scenes. 199 is the MessageBox's own one.
+static const int kMenuBackgroundDepth = -1;
+// UIScene::getSafeZoneHalfHeight / HalfWidth on a HiDef screen: 5% of the
+// 1920x1080 the movies are laid out for
+static const int kSafeZoneTop    = 1080 / 20;
+static const int kSafeZoneBottom = 1080 / 20;
+static const int kSafeZoneLeft   = 1920 / 20;
+static const int kSafeZoneRight  = 1920 / 20;
+static const int kMessageBoxDepth  = 200;
+static const int kTooltipsDepth    = 201;
+// UIComponent_TutorialPopup, on the popup layer over the scenes (the HUD
+// and the container menus)
+static const int kTutorialPopupDepth = 150;
+// UIComponent_PressStartToPlay, on the fullscreen group's tooltips layer
+// over everything else
+static const int kPressStartToPlayDepth = 202;
+
+// Weak-ish ref to the live VC so C-style ExternalInterface bridge
+// callbacks can reach instance methods (navigateBack,
+// finishDialogWithResult) without plumbing self through the C ABI.
+// Set in viewDidLoad, cleared in viewDidDisappear.
+static Host* g_active_vc = nullptr;
+Host g_host;
+
+// UIScene_Intro::m_bIgnoreNavigate
+static bool g_intro_ignore_navigate = false;
+
+static int MCLECallPath(const std::string& path, const std::string& method, const host::Args& args);
+static void MCLETutorialPopupApplyOps(void);
+static void MCLETutorialPopupMovieReloaded(void);
+void mcle_game_set_menu_displayed(bool displayed); // Game/MCLEGameLoop.cpp
+bool mcle_game_menu_displayed();                   // Game/MCLEGameLoop.cpp
+extern "C" void mcle_game_check_menu_displayed(void); // Game/MCLEGameLoop.cpp
+extern "C" int mcle_game_frame_begin(double seconds);   // Game/MCLEGameLoop.cpp
+extern "C" int mcle_game_console_frame(void);           // Game/MCLEGameLoop.cpp
+
+// How far the movies are run on this frame: a 60th for each of the
+// original's frames it stands for, so they keep their speed on a screen
+// of any rate
+static float g_frame_seconds = 1.0f / 60.0f;
+
+// What each UIScene_Settings*Menu labels a slider with, both in init and
+// in handleSliderMove. value is the slider's own value.
+static std::string MCLESettingsSliderLabel(const std::string& scene, int sliderId, int value) {
+    if (scene == "SettingsAudioMenu1080.swf") {
+        if (sliderId == 0) return host::format("%s: %d%%", MCLEStr(IDS_SLIDER_MUSIC).c_str(), value);
+        if (sliderId == 1) return host::format("%s: %d%%", MCLEStr(IDS_SLIDER_SOUND).c_str(), value);
+    } else if (scene == "SettingsControlMenu1080.swf") {
+        if (sliderId == 0) return host::format("%s: %d%%", MCLEStr(IDS_SLIDER_SENSITIVITY_INGAME).c_str(), value);
+        if (sliderId == 1) return host::format("%s: %d%%", MCLEStr(IDS_SLIDER_SENSITIVITY_INMENU).c_str(), value);
+    } else if (scene == "SettingsOptionsMenu1080.swf") {
+        if (sliderId == 5) {
+            if (value == 0) return MCLEStr(IDS_SLIDER_AUTOSAVE_OFF);
+            return host::format("%s: %d %s", MCLEStr(IDS_SLIDER_AUTOSAVE).c_str(), value * 15, MCLEStr(IDS_MINUTES).c_str());
+        }
+        if (sliderId == 7) {
+            static const int kTitles[4] = { IDS_DIFFICULTY_TITLE_PEACEFUL, IDS_DIFFICULTY_TITLE_EASY,
+                                            IDS_DIFFICULTY_TITLE_NORMAL, IDS_DIFFICULTY_TITLE_HARD };
+            return host::format("%s: %s", MCLEStr(IDS_SLIDER_DIFFICULTY).c_str(), MCLEStr(kTitles[std::max(0, std::min(value, 3))]).c_str());
+        }
+    } else if (scene == "SettingsGraphicsMenu1080.swf") {
+        if (sliderId == 3) {
+            // LevelToDistance
+            static const int kDistance[6] = {2, 4, 8, 16, 32, 64};
+            return host::format("Render Distance: %d", kDistance[std::max(0, std::min(value, 5))]);
+        }
+        if (sliderId == 4) return host::format("%s: %d%%", MCLEStr(IDS_SLIDER_GAMMA).c_str(), value);
+        // sliderValueToFov: 70..110 over 0..100
+        if (sliderId == 5) return host::format("FOV: %d", 70 + (std::max(0, std::min(value, 100)) * (110 - 70)) / 100);
+        if (sliderId == 6) return host::format("%s: %d%%", MCLEStr(IDS_SLIDER_INTERFACEOPACITY).c_str(), value);
+    } else if (scene == "SettingsUIMenu1080.swf") {
+        if (sliderId == 6) return host::format("%s: %d", MCLEStr(IDS_SLIDER_UISIZE).c_str(), value);
+        if (sliderId == 7) return host::format("%s: %d", MCLEStr(IDS_SLIDER_UISIZESPLITSCREEN).c_str(), value);
+    }
+    return "";
+}
+
+// UIScene_SettingsOptionsMenu's difficulty description under the slider
+static std::string MCLEDifficultyText(int difficulty) {
+    static const int kText[4] = { IDS_DIFFICULTY_PEACEFUL, IDS_DIFFICULTY_EASY, IDS_DIFFICULTY_NORMAL,
+                                  IDS_DIFFICULTY_HARD };
+    // <font color> with eHTMLColor_White
+    return host::format("<font color=\"#%08x\">%s", 0xffffffffu, MCLEStr(kText[std::max(0, std::min(difficulty, 3))]).c_str());
+}
+
+// Maps an (sliderId, rawValue) coming from handleSliderMove in
+// whatever scene g_current_scene_name names, to a pair
+// (mcle_setting index, value to store). Returns -1 if the pair
+// doesn't map to anything persisted.
+static int mcle_map_slider(int sliderId, double rawValue, unsigned char* outValue) {
+    if (!outValue) return -1;
+    int v = (int)rawValue;
+    if (v < 0) v = 0; if (v > 255) v = 255;
+    *outValue = (unsigned char)v;
+    if (g_current_scene_name == "SettingsAudioMenu1080.swf") {
+        if (sliderId == 0) return MCLE_SETTING_MusicVolume;
+        if (sliderId == 1) return MCLE_SETTING_SoundFXVolume;
+    } else if (g_current_scene_name == "SettingsControlMenu1080.swf") {
+        if (sliderId == 0) return MCLE_SETTING_SensitivityInGame;
+        if (sliderId == 1) return MCLE_SETTING_SensitivityInMenu;
+    } else if (g_current_scene_name == "SettingsOptionsMenu1080.swf") {
+        if (sliderId == 5) return MCLE_SETTING_Autosave;
+        if (sliderId == 7) return MCLE_SETTING_Difficulty;
+    } else if (g_current_scene_name == "SettingsGraphicsMenu1080.swf") {
+        // RenderDistance slider value is a level 0..5; store the
+        // block count the level maps to (console's
+        // eGameSetting_RenderDistance holds the count).
+        if (sliderId == 3) {
+            static const int kDistance[6] = {2, 4, 8, 16, 32, 64};
+            int lvl = v; if (lvl < 0) lvl = 0; if (lvl > 5) lvl = 5;
+            *outValue = (unsigned char)kDistance[lvl];
+            return MCLE_SETTING_RenderDistance;
+        }
+        if (sliderId == 4) return MCLE_SETTING_Gamma;
+        if (sliderId == 5) return MCLE_SETTING_FOV;
+        if (sliderId == 6) return MCLE_SETTING_InterfaceOpacity;
+    } else if (g_current_scene_name == "SettingsUIMenu1080.swf") {
+        // the slider goes 1..3, the setting is that minus one
+        if (sliderId == 6 || sliderId == 7) *outValue = (unsigned char)std::max(0, std::min(v - 1, 2));
+        if (sliderId == 6) return MCLE_SETTING_UISize;
+        if (sliderId == 7) return MCLE_SETTING_UISizeSplitscreen;
+    }
+    return -1;
+}
+
+static int mcle_map_checkbox(int boxId) {
+    // UIScene_ControlsMenu::handleCheckboxToggled
+    if (g_current_scene_name == "Controls1080.swf") {
+        if (boxId == 3) return MCLE_SETTING_ControlInvertLook;
+        if (boxId == 4) return MCLE_SETTING_ControlSouthPaw;
+        return -1;
+    }
+    if (g_current_scene_name == "SettingsOptionsMenu1080.swf") {
+        switch (boxId) {
+            case 0: return MCLE_SETTING_ViewBob;
+            case 1: return MCLE_SETTING_Hints;
+            case 2: return MCLE_SETTING_Tooltips;
+            case 3: return MCLE_SETTING_GamertagsVisible;
+            // 4 is the mash-up worlds one, which isn't a setting
+        }
+    } else if (g_current_scene_name == "SettingsGraphicsMenu1080.swf") {
+        switch (boxId) {
+            case 0: return MCLE_SETTING_Clouds;
+            case 1: return MCLE_SETTING_BedrockFog;
+            case 2: return MCLE_SETTING_CustomSkinAnim;
+        }
+    } else if (g_current_scene_name == "SettingsUIMenu1080.swf") {
+        switch (boxId) {
+            case 0: return MCLE_SETTING_DisplayHUD;
+            case 1: return MCLE_SETTING_DisplayHand;
+            case 2: return MCLE_SETTING_DeathMessages;
+            case 3: return MCLE_SETTING_AnimatedCharacter;
+            case 4: return MCLE_SETTING_SplitScreenVertical;
+            case 5: return MCLE_SETTING_DisplaySplitscreenGamertags;
+        }
+    }
+    return -1;
+}
+
+// SettingsOptionsMenu's Languages button, which only the Xbox One build
+// shows, is the port's Longer Loading Screens option: the label has the
+// value and a press flips it
+static const int kOptionsLanguagesControl = 6;   // eControl_Languages
+static std::string MCLELongerLoadingLabel(void) {
+    return host::format("Longer Loading: %s",
+            MCLEStr(mcle_settings_get_longer_loading() ? IDS_ON : IDS_OFF).c_str());
+}
+
+static void MCLEToggleLongerLoading(void) {
+    mcle_settings_set_longer_loading(!mcle_settings_get_longer_loading());
+    MCLECallPath("Languages", "SetLabel", { MCLELongerLoadingLabel() });
+}
+
+// UIScene_SettingsOptionsMenu's m_bMashUpWorldsUnhideOption
+static const int kOptionsMashUpControl = 4;      // eControl_ShowMashUpWorlds
+static bool g_options_mashup_unhide = false;
+
+// UIControl_CheckBox::IsChecked for the Options, Graphics and User Interface
+// scenes, by control id, -1 where the scene has no box. Their movies don't
+// call handleCheckboxToggled, the scenes ask each box on the way out, so a
+// box is followed from the A that flips it.
+static const int kSettingsCheckboxes = 8;
+static int g_settings_checkbox[kSettingsCheckboxes] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+
+static bool MCLEIsSettingsCheckboxScene(const std::string& scene) {
+    return scene == "SettingsOptionsMenu1080.swf" || scene == "SettingsGraphicsMenu1080.swf" ||
+           scene == "SettingsUIMenu1080.swf";
+}
+
+static void MCLESettingsCheckboxesClear(void) {
+    for (int& box : g_settings_checkbox) box = -1;
+}
+
+// FJ_CheckBox flips on the ENTER it gets while it has the focus
+static void MCLESettingsCheckboxPressed(void) {
+    int id = g_scene_focus_control;
+    if (id < 0 || id >= kSettingsCheckboxes || g_settings_checkbox[id] < 0) return;
+    g_settings_checkbox[id] = g_settings_checkbox[id] ? 0 : 1;
+}
+
+// UIScene_SettingsOptionsMenu::setGameSettings, and the same thing in
+// UIScene_SettingsGraphicsMenu and UIScene_SettingsUIMenu's ACTION_MENU_CANCEL
+static void MCLESettingsSetGameSettings(void) {
+    // check the checkboxes
+    bool hostOptions = false;
+    for (int id = 0; id < kSettingsCheckboxes; ++id) {
+        if (g_settings_checkbox[id] < 0) continue;
+        int setting = mcle_map_checkbox(id);
+        if (setting < 0) continue;
+        unsigned char v = g_settings_checkbox[id] ? 1 : 0;
+        if (mcle_settings_get(setting) == v) continue;
+        mcle_settings_set(setting, v);
+        // ActionGameSettings: the host's game options follow these in game
+        if (setting == MCLE_SETTING_GamertagsVisible || setting == MCLE_SETTING_BedrockFog) hostOptions = true;
+    }
+    if (hostOptions) mcle_game_host_settings_changed();
+
+    // the mashup option will only be shown if some worlds have been previously hidden
+    if (g_current_scene_name == "SettingsOptionsMenu1080.swf" && g_options_mashup_unhide &&
+        g_settings_checkbox[kOptionsMashUpControl] > 0) {
+        // unhide all worlds
+        mcle_settings_set_mashup_worlds(0xFFFFFFFF);
+    }
+}
+
+// UIScene_ControlsMenu. The labels and lines in e_Pad order.
+extern "C" void mcle_controls_text(int layout, int creativeMode, int southPaw, int* out); // Game/MCLEControls.cpp
+static const char* const kControlsLabels[19] = {
+    "LabelBack", "LabelLT", "LabelLB", "LabelDPadLeft", "LabelDPadRight", "LabelDPadUp", "LabelDPadDown",
+    "LabelLS_1", "LabelLS_2", "LabelStart", "LabelRT", "LabelRB", "LabelY", "LabelB", "LabelA", "LabelX",
+    "LabelRS_1", "LabelRS_2", "LabelTouch",
+};
+static const char* const kControlsLines[19] = {
+    "LineBack", "LineLT", "LineLB", "LineDpadLeft", "LineDpadRight", "LineDpadUp", "LineDpadDown",
+    "LineL3", "LineLeftStick", "LineStart", "LineRT", "LineRB", "LineY", "LineB", "LineA", "LineX",
+    "LineR3", "LineRightStick", "LineTouch",
+};
+static int g_controls_layout = 0;       // m_iCurrentNavigatedControlsLayout
+static bool g_controls_creative = false; // m_bCreativeMode
+static std::atomic<bool> g_controls_layout_changed{false};
+
+static void MCLESetPathVisible(const std::string& path, bool visible);
+// platformskinHD.swf holds the PS4 skin, skinHDOrbis.swf
+static bool g_platform_skin_orbis = false;
+
+// PositionAllText
+static void MCLEControlsPositionAllText(void) {
+    int text[19];
+    mcle_controls_text(g_controls_layout, g_controls_creative ? 1 : 0,
+                       mcle_settings_get(MCLE_SETTING_ControlSouthPaw), text);
+    for (int i = 0; i < 19; ++i) {
+        MCLECallPath(kControlsLabels[i], "SetLabel", { text[i] >= 0 ? MCLEStr(text[i]) : "" });
+        MCLESetPathVisible(kControlsLines[i], text[i] >= 0);
+    }
+    g_controls_layout_changed = false;
+}
+
+// "Current Layout : Layout n"
+static std::string MCLEControlsLayoutString(int scheme) {
+    static const int kSchemeText[3] = { IDS_CONTROLS_SCHEME0, IDS_CONTROLS_SCHEME1, IDS_CONTROLS_SCHEME2 };
+    return host::format("%s : %s", MCLEStr(IDS_CURRENT_LAYOUT).c_str(), MCLEStr(kSchemeText[std::max(0, std::min(scheme, 2))]).c_str());
+}
+
+// UIScene_ControlsMenu constructor
+static void MCLEControlsInit(void) {
+    // SetPlatform: the Windows64 picture, or the PS4 one when the PS4 skin is in
+    MCLECallPath("", "SetPlatform", { g_platform_skin_orbis ? 3 : 0 });
+
+    bool notInGame = !mcle_world_is_ticking();
+    MCLECallPath("Version", "Init", { notInGame ? VER_PRODUCTVERSION_STR : " " });
+    MCLEHudState st;
+    mcle_hud_get_state(&st);
+    g_controls_creative = !notInGame && st.valid && st.mayfly;
+
+    MCLECallPath("Button1", "Init", { "1", 0 });
+    MCLECallPath("Button2", "Init", { "2", 1 });
+    MCLECallPath("Button3", "Init", { "3", 2 });
+
+    struct Cb { const char* name; int ids; int id; int setting; };
+    const Cb checkboxes[] = {
+        { "InvertLook", IDS_INVERT_LOOK, 3, MCLE_SETTING_ControlInvertLook },
+        { "SouthPaw",   IDS_SOUTHPAW,    4, MCLE_SETTING_ControlSouthPaw },
+    };
+    // UIControl_CheckBox::init -> FJ_CheckBox.Init(label, id, checked)
+    for (const auto& c : checkboxes) {
+        MCLECallPath(c.name, "Init", { MCLEStr(c.ids), c.id, mcle_settings_get(c.setting) ? true : false });
+    }
+
+    int selected = std::max(0, std::min((int)mcle_settings_get(MCLE_SETTING_ControlScheme), 2));
+    MCLECallPath("CurrentLayout", "Init", { MCLEControlsLayoutString(selected) });
+    g_controls_layout = selected;
+    MCLECallPath("", "SetControllerLayout", { selected });
+
+    for (int i = 0; i < 19; ++i) {
+        MCLECallPath(kControlsLabels[i], "Init", { "" });
+        MCLESetPathVisible(kControlsLines[i], false);
+    }
+    MCLEControlsPositionAllText();
+}
+
+// UIScene_HowToPlay (Game/MCLEHowToPlay.cpp has the pages)
+extern "C" int mcle_htp_num_pages(void);
+extern "C" int mcle_htp_menu_page(int button);
+extern "C" int mcle_htp_flash_page(int page);
+extern "C" const char* mcle_htp_page_text(int page);
+extern "C" int mcle_htp_label_count(void);
+extern "C" const char* mcle_htp_label(int i, const char** name);
+static int g_htp_page = 0; // m_eCurrPage
+
+static void MCLESetTooltips(const int ids[11]);
+static void MCLETooltipsApplyOpacity(bool menuDisplayed, int opacityTimer, bool force);
+
+// StartPage, then updateTooltips: Next unless it's the last page, Prev
+// unless it's the first
+static void MCLEHowToPlayStartPage(int page) {
+    g_htp_page = page;
+    const char* utf8 = mcle_htp_page_text(page);
+    std::string text = std::string(utf8 ? utf8 : "");
+    MCLECallPath("", "LoadHowToPlayPage", { mcle_htp_flash_page(page), text });
+    int iA = -1, iX = -1;
+    if (page == 0) {
+        iA = IDS_HOW_TO_PLAY_NEXT;
+    } else if (page + 1 == mcle_htp_num_pages()) {
+        iX = IDS_HOW_TO_PLAY_PREV;
+    } else {
+        iA = IDS_HOW_TO_PLAY_NEXT;
+        iX = IDS_HOW_TO_PLAY_PREV;
+    }
+    int ids[11] = { iA, IDS_TOOLTIPS_BACK, iX, -1, -1, -1, -1, -1, -1, -1, -1 };
+    MCLESetTooltips(ids);
+}
+
+// UIScene_HowToPlay constructor
+static void MCLEHowToPlayInit(void) {
+    for (int i = 0; i < mcle_htp_label_count(); ++i) {
+        const char* name = "";
+        const char* utf8 = mcle_htp_label(i, &name);
+        std::string text = std::string(utf8 ? utf8 : "");
+        MCLECallPath(name, "Init", { text });
+    }
+    MCLEHowToPlayStartPage(g_htp_page);
+}
+
+// CMinecraftApp::SetAutosaveTimerTime: the Autosave setting is in 15
+// minute steps
+static double g_autosave_due = 0;
+static void MCLESetAutosaveTimerTime(void) {
+    g_autosave_due = host::now() + mcle_settings_get(MCLE_SETTING_Autosave) * 60.0 * 15.0;
+}
+
+// UIScene_Credits
+extern "C" int mcle_credits_count(void);
+extern "C" int mcle_credits_get(int index, char* out, int cap, int* type);
+static std::atomic<bool> g_credits_add_next{false};
+static int g_credits_index = -1;
+
+// setNextLabel / addImage: the last one tells the movie the credits end there
+static void MCLECreditsAdd(int index) {
+    char text[512];
+    int type = 0;
+    int kind = mcle_credits_get(index, text, sizeof(text), &type);
+    bool last = index == mcle_credits_count() - 1;
+    if (kind == 1) {
+        std::string label = std::string(text);
+        MCLECallPath("", "SetNextLabel", { label, type, last ? true : false });
+    } else if (kind == 2) {
+        MCLECallPath("", "AddImage", { type, last ? true : false });
+    }
+}
+
+// UIScene_Credits constructor: the first 20 lines Flash can cope with
+static void MCLECreditsInit(void) {
+    g_credits_add_next = false;
+    g_credits_index = -1;
+    for (int i = 0; i < 20; ++i) {
+        ++g_credits_index;
+        MCLECreditsAdd(g_credits_index);
+    }
+}
+
+// How much a 1920x1080 movie, all of TU19's 16:9 screen, grows about the
+// centre to cover a screen of another shape
+static float MCLEMovieCoverScale(host::Size view) {
+    if (view.width <= 0 || view.height <= 0) return 1.0f;
+    const float movieAspect = 1920.0f / 1080.0f;
+    const float aspect = (float)(view.width / view.height);
+    return std::max(aspect / movieAspect, movieAspect / aspect);
+}
+
+// How far a wider screen goes past each side of the 16:9 stage, in stage
+// pixels
+static float MCLEStageSideOverhang(host::Size view) {
+    if (view.width <= 0 || view.height <= 0) return 0.0f;
+    const float stageWidth = 1080.0f * (float)(view.width / view.height);
+    return std::max(0.0f, (stageWidth - 1920.0f) * 0.5f);
+}
+
+// The part of the stage a screen of another shape shows, in stage pixels:
+// the stage fits the screen and is centred on it
+static host::Rect MCLEScreenInStage(host::Size view) {
+    if (view.width <= 0 || view.height <= 0) return host::Rect{ { 0, 0 }, { 1920, 1080 } };
+    const double aspect = view.width / view.height;
+    const double w = std::max<double>(1920.0, 1080.0 * aspect);
+    const double h = std::max<double>(1080.0, 1920.0 / aspect);
+    return host::Rect{ { (float)((1920.0 - w) * 0.5), (float)((1080.0 - h) * 0.5) }, { (float)w, (float)h } };
+}
+
+// Strips the movie runs from one side of its stage to the other go on to
+// the sides of a wider screen
+static void MCLEExtendStripsToScreen(PlayerHandle* player, host::Size view, const int* depths, int count) {
+    const float side = MCLEStageSideOverhang(view);
+    if (!player || side <= 0.0f) return;
+    for (int i = 0; i < count; ++i) {
+        ruffle_ios_set_root_child_edge_extend_at_depth(player, depths[i], side + 1.0f, side + 1.0f);
+    }
+}
+
+// CreditBackground fills the 1920x1080 movie, all of TU19's 16:9 screen.
+// It's grown about the centre to fill a wider screen too, so nothing
+// shows around it.
+static void MCLECreditsCoverScreen(PlayerHandle* player, host::Size view) {
+    if (!player || view.width <= 0 || view.height <= 0) return;
+    const float s = MCLEMovieCoverScale(view);
+    ruffle_ios_set_root_child_transform_at_depth(player, 1, s, s,
+        960.0f * (1.0f - s), 540.0f * (1.0f - s));
+}
+
+// UIScene_Credits::tick, the next line once the movie asks for it
+static void MCLECreditsTick(void) {
+    if (!g_credits_add_next.exchange(false)) return;
+    ++g_credits_index;
+    if (g_credits_index >= mcle_credits_count()) g_credits_index = 0;
+    MCLECreditsAdd(g_credits_index);
+}
+
+// UIScene_EndPoem::tick: the paragraph the movie asked for, and whether
+// it's the last
+static void MCLEEndPoemTick(void) {
+    const int count = mcle_end_poem_paragraph_count();
+    const int requested = g_endpoem_requested.load();
+    if (requested < 0 || requested >= count) return;
+    const char* utf8 = mcle_end_poem_paragraph(requested);
+    std::string label = std::string(utf8 ? utf8 : "");
+    MCLECallPath("", "SetNextLabel", { label, requested, requested == count - 1 ? true : false });
+    g_endpoem_requested = -1;
+}
+
+// A world name as the game's wide strings hold it
+static std::wstring MCLEWideString(const std::string& s) {
+    return host::wide_from_utf8(s);
+}
+
+static std::string MCLEStringFromWide(const std::wstring& w) {
+    if (w.empty()) return "";
+    return host::utf8_from_wide(w);
+}
+
+// A seed in UTF-16 units, Windows' wchar_t, so a text seed hashes the same
+static std::wstring MCLEWideUTF16(const std::string& s) {
+    return host::utf16_wide_from_utf8(s);
+}
+
+static std::string MCLEStringFromUTF16(const std::wstring& w) {
+    if (w.empty()) return "";
+    return host::utf8_from_utf16_wide(w);
+}
+
+// IUIScene_StartGame scenes aren't signed in to an online service, so
+// multiplayer isn't allowed: the online params are off, and if the Online
+// setting is on it was changed by the system
+static void MCLEStartGameOffline(MCLELaunchMoreOptions& p) {
+    p.bOnlineSettingChangedBySystem = mcle_settings_get(MCLE_SETTING_Online) != 0;
+    p.bOnlineGame = false;
+    p.bInviteOnly = false;
+    p.bAllowFriendsOfFriends = false;
+}
+
+// UIScene_CreateWorldMenu constructor, the state that outlives its movie
+static void MCLECreateWorldReset(void) {
+    g_create_world_name = MCLEStr(IDS_DEFAULT_WORLD_NAME);
+    g_create_game_mode_id = 0;   // GameType::SURVIVAL
+    g_create_game_mode_creative = false;
+    g_create_ignore_input = false;
+
+    MCLELaunchMoreOptions p;
+    p.bGenerateOptions = true;
+    p.bStructures = true;
+    p.bFlatWorld = false;
+    p.bBonusChest = false;
+    p.bPVP = true;
+    p.bTrust = true;
+    p.bFireSpreads = true;
+    p.bHostPrivileges = false;
+    p.bTNT = true;
+    p.iPad = 0;
+
+    p.bMobGriefing = true;
+    p.bKeepInventory = false;
+    p.bDoMobSpawning = true;
+    p.bDoMobLoot = true;
+    p.bDoTileDrops = true;
+    p.bNaturalRegeneration = true;
+    p.bDoDaylightCycle = true;
+    MCLEStartGameOffline(p);
+    g_start_options = p;
+
+    // IUIScene_StartGame's constructor
+    g_texture_pack_index = mcle_texture_pack_index(0);
+    g_texture_pack_desc_displayed = false;
+    // block input if we're waiting for DLC to install. The end of dlc mounting fills the list.
+    g_texture_pack_waiting_for_dlc = mcle_dlc_start_install_process(0);
+}
+
+extern "C" void mcle_ios_settings_event_bridge(const char* method, double id, double value) {
+    if (!method) return;
+    if (strcmp(method, "handleCheckboxToggled") == 0) {
+        // The scene over the game
+        if (mcle_container_is_open() && !g_pending_dialog) {
+            int cid = (int)id;
+            bool checked = value != 0.0;
+            host::main_async([=] { mcle_container_checkbox_toggled(cid, checked); });
+            return;
+        }
+        if (g_current_scene_name == "LaunchMoreOptionsMenu1080.swf") {
+            int cid = (int)id;
+            bool checked = value != 0.0;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->moreOptionsCheckbox_checked(cid, checked);
+            });
+            return;
+        }
+        int setting = mcle_map_checkbox((int)id);
+        if (setting < 0) return;
+        unsigned char v = (value != 0.0) ? 1 : 0;
+        mcle_settings_set(setting, v);
+        host::log("[settings] %s checkbox id=%d -> setting=%d val=%u",
+              g_current_scene_name.c_str(), (int)id, setting, v);
+        // UIScene_ControlsMenu: southpaw swaps move and look
+        if (setting == MCLE_SETTING_ControlSouthPaw) g_controls_layout_changed = true;
+        // ActionGameSettings: the host's game options follow these in game
+        if (setting == MCLE_SETTING_GamertagsVisible || setting == MCLE_SETTING_BedrockFog) {
+            host::main_async([=] { mcle_game_host_settings_changed(); });
+        }
+    } else if (strcmp(method, "handleSliderMove") == 0) {
+        if (g_current_scene_name == "LoadMenu1080.swf") {
+            int sid = (int)id;
+            int v = (int)value;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->loadMenuSlider_value(sid, v);
+            });
+            return;
+        }
+        if (g_current_scene_name == "CreateWorldMenu1080.swf") {
+            int sid = (int)id;
+            int v = (int)value;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->createWorldSlider_value(sid, v);
+            });
+            return;
+        }
+        if (g_current_scene_name == "LaunchMoreOptionsMenu1080.swf") {
+            int sid = (int)id;
+            int v = (int)value;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->moreOptionsSlider_value(sid, v);
+            });
+            return;
+        }
+        unsigned char stored = 0;
+        int setting = mcle_map_slider((int)id, value, &stored);
+        if (setting < 0) return;
+        // UIControl_Slider::handleSliderMove
+        if (mcle_settings_get(setting) != stored) MCLEPlayUISFX("scroll");
+        mcle_settings_set(setting, stored);
+        host::log("[settings] %s slider id=%d raw=%g -> setting=%d val=%u",
+              g_current_scene_name.c_str(), (int)id, value, setting, stored);
+
+        // Apply live for the settings the audio engine cares about
+        // so the Music / Sound sliders actually fade the playing
+        // track rather than just writing to disk.
+        // UIScene_SettingsOptionsMenu restarts the autosave timer
+        if (setting == MCLE_SETTING_Autosave) {
+            host::main_async([=] { MCLESetAutosaveTimerTime(); });
+        }
+        // The tooltip strip takes the new Interface Opacity, with the
+        // settings menu up
+        if (setting == MCLE_SETTING_InterfaceOpacity) {
+            host::main_async([=] { MCLETooltipsApplyOpacity(true, 0, false); });
+        }
+        // ActionGameSettings -> Options::set: the game's sound engine
+        // changes straight away too, paused or not
+        if (setting == MCLE_SETTING_MusicVolume) {
+            mcle_sound_update_music_volume(stored / 100.0f);
+        } else if (setting == MCLE_SETTING_SoundFXVolume) {
+            mcle_sound_update_sfx_volume(stored / 100.0f);
+        }
+
+        // Update the slider's displayed label. Console does this in
+        // UIControl_Slider::handleSliderMove (line 108-111 of
+        // UIControl_Slider.cpp) via setLabel with the format string
+        // the scene registered. Mirror per-control here.
+        extern PlayerHandle* g_ruffle_player;
+        if (!g_ruffle_player) return;
+        static const std::map<std::string, std::map<int, std::string>> kSliderNames = {
+            { "SettingsAudioMenu1080.swf",    { { 0, "Music" }, { 1, "Sound" } } },
+            { "SettingsControlMenu1080.swf",  { { 0, "SensitivityInGame" }, { 1, "SensitivityInMenu" } } },
+            { "SettingsOptionsMenu1080.swf",  { { 5, "Autosave" }, { 7, "Difficulty" } } },
+            { "SettingsGraphicsMenu1080.swf", { { 3, "RenderDistance" }, { 4, "Gamma" }, { 5, "FOV" }, { 6, "InterfaceOpacity" } } },
+            { "SettingsUIMenu1080.swf",       { { 6, "UISize" }, { 7, "UISizeSplitscreen" } } },
+        };
+        std::string sliderName;
+        auto sceneSliders = kSliderNames.find(g_current_scene_name);
+        if (sceneSliders != kSliderNames.end()) {
+            auto named = sceneSliders->second.find((int)id);
+            if (named != sceneSliders->second.end()) sliderName = named->second;
+        }
+        std::string sliderLabel = MCLESettingsSliderLabel(g_current_scene_name, (int)id, (int)value);
+        // UIScene_SettingsOptionsMenu::handleSliderMove also updates the
+        // difficulty description
+        if (g_current_scene_name == "SettingsOptionsMenu1080.swf" && (int)id == 7) {
+            std::string text = MCLEDifficultyText((int)value);
+            host::main_async([=] {
+                MCLECallPath("DifficultyText", "SetLabel", { text });
+            });
+        }
+        if (!sliderName.empty() && !sliderLabel.empty()) {
+            // DO NOT call back into ruffle_ios_* from here: the
+            // ExtInt callback path holds Player::lock already, and
+            // call_init_on_named_child tries to re-acquire it,
+            // deadlocking the whole game. Defer the SetLabel to
+            // the next main-queue run so the player lock releases
+            // first.
+            std::string capturedName = sliderName;
+            std::string capturedLabel = sliderLabel;
+            host::main_async([=] {
+                extern PlayerHandle* g_ruffle_player;
+                if (!g_ruffle_player) return;
+                const char* n = capturedName.c_str();
+                const char* l = capturedLabel.c_str();
+                ruffle_ios_call_init_on_named_child(
+                    g_ruffle_player,
+                    (const uint8_t*)n, strlen(n),
+                    (const uint8_t*)"SetLabel", 8,
+                    (const uint8_t*)l, strlen(l),
+                    0.0);
+            });
+        }
+    } else if (strcmp(method, "handlePress") == 0) {
+        // The scene over the game (UIScene_SignEntryMenu, UIScene_Keyboard)
+        if (mcle_container_is_open() && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { mcle_container_press(cid, child); });
+            return;
+        }
+        // UIScene_Keyboard over a front end menu
+        if (mcle_keyboard_front_end_is_open() && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { mcle_keyboard_front_end_press(cid, child); });
+            return;
+        }
+        // UIScene_ControlsMenu::handlePress: the layout buttons pick the scheme
+        if (g_current_scene_name == "Controls1080.swf") {
+            int control = (int)id;
+            if (control < 0 || control > 2) return;
+            mcle_settings_set(MCLE_SETTING_ControlScheme, (unsigned char)control);
+            host::main_async([=] {
+                MCLECallPath("CurrentLayout", "SetLabel", { MCLEControlsLayoutString(control) });
+            });
+            return;
+        }
+        // UIScene_SettingsOptionsMenu::handlePress, its only button
+        if (g_current_scene_name == "SettingsOptionsMenu1080.swf" && !g_pending_dialog) {
+            if ((int)id != kOptionsLanguagesControl) return;
+            host::main_async([=] {
+                mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+                MCLEToggleLongerLoading();
+            });
+            return;
+        }
+        // LCE SWF fires handlePress(controlId, childId) when the
+        // user hits A on a button or list item. FJ_Document's
+        // stage-level handler in FJ_Document.as:170-191 routes
+        // through ExternalInterface. For list widgets (LoadOrJoin
+        // SavesList/JoinList) controlId is the FJ_ButtonList's id
+        // and childId is the item index. For simple FJ_Button
+        // screens the MainMenu path fires controlId=buttonId,
+        // childId=0 - but the host's DPad handler already
+        // routes simple-button scenes natively, so this only
+        // needs the list-widget path.
+        int listId = (int)id;
+        int itemId = (int)value;
+        if (g_current_scene_name == "LoadOrJoinMenu1080.swf" && !g_pending_dialog) {
+            // m_bIgnoreInput, handleInput wouldn't have let the press through
+            if (g_load_or_join_ignore_input) return;
+            if (listId == 0) {
+                // UIScene_LoadOrJoinMenu::handlePress: item 0 is Create New
+                // World, then the level generators, then the saves.
+                int defaultButtons = g_load_default_buttons;
+                MCLEPlayUISFX("press");
+                if (itemId == 0) {
+                    host::main_async([=] {
+                        MCLECreateWorldReset();
+                        if (g_active_vc) g_active_vc->navigateForwardTo("CreateWorldMenu1080.swf");
+                    });
+                } else if (itemId < defaultButtons) {
+                    // The tutorial's LoadLevelGen goes straight to the game,
+                    // the others have LoadMenu first
+                    int lGenID = itemId - 1;
+                    host::main_async([=] {
+                        if (!mcle_level_generator_is_tutorial(lGenID)) {
+                            g_load_save_index = -1;
+                            g_load_level_gen = lGenID;
+                            g_load_menu_fresh = true;
+                            if (g_active_vc) g_active_vc->navigateForwardTo("LoadMenu1080.swf");
+                            return;
+                        }
+                        if (g_loading_world) return;
+                        if (g_active_vc) g_active_vc->navigateForwardTo("FullscreenProgress1080.swf");
+                        if (mcle_game_start_level_gen(lGenID)) {
+                            g_loading_world = true;
+                        } else {
+                            host::log("[loadorjoin] level generator %d didn't start", lGenID);
+                            if (g_active_vc) g_active_vc->navigateBack();
+                        }
+                    });
+                } else {
+                    int saveIdx = itemId - defaultButtons;
+                    host::main_async([=] {
+                        g_load_save_index = saveIdx;
+                        g_load_level_gen = -1;
+                        g_load_menu_fresh = true;
+                        if (g_active_vc) g_active_vc->navigateForwardTo("LoadMenu1080.swf");
+                    });
+                }
+            } else if (listId == 1) {
+                // JoinList. iOS has no netcode yet, so this list
+                // stays empty - log in case a press arrives anyway
+                // so the event path is visible.
+                host::log("[loadorjoin] join list press idx=%d (no networking yet)",
+                      itemId);
+            }
+        } else if (g_current_scene_name == "HowToPlayMenu1080.swf") {
+            // UIScene_HowToPlayMenu::handlePress: the topic's page
+            int page = mcle_htp_menu_page(itemId);
+            MCLEPlayUISFX("press");
+            host::main_async([=] {
+                g_htp_page = page;
+                if (g_active_vc) g_active_vc->navigateForwardTo("HowToPlay1080.swf");
+            });
+        } else if (g_current_scene_name == "DLCMainMenu1080.swf") {
+            // Console's UIScene_DLCMainMenu::handlePress opens
+            // DLCOffersMenu for the selected offer category. Not
+            // wired until the store backend lands.
+            host::log("[dlcmain] offer press idx=%d (store backend is a follow-up)",
+                  itemId);
+        } else if (g_current_scene_name == "LeaderboardMenu1080.swf") {
+            // FJ_LeaderboardList is native-driven on console
+            // (UIControl_LeaderboardList customDraw + per-row
+            // selection). The list isn't populated yet so a
+            // press here shouldn't fire, but log it anyway.
+            host::log("[leaderboard] entry press idx=%d (online service is a follow-up)",
+                  itemId);
+        } else if (g_current_scene_name == "LoadMenu1080.swf" && !g_pending_dialog) {
+            int cid = listId;
+            int child = itemId;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->loadMenuPress_child(cid, child);
+            });
+        } else if (g_current_scene_name == "CreateWorldMenu1080.swf" && !g_pending_dialog) {
+            int cid = listId;
+            int child = itemId;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->createWorldPress_child(cid, child);
+            });
+        } else if (g_current_scene_name == "LaunchMoreOptionsMenu1080.swf" && !g_pending_dialog) {
+            int cid = listId;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->moreOptionsPress(cid);
+            });
+        } else if (g_pending_dialog) {
+            // MessageBox button press. Mirrors
+            // UIScene_MessageBox::handlePress (UIScene_MessageBox.cpp:120):
+            //   controlId 0 -> EMessage_ResultAccept
+            //   controlId 1 -> EMessage_ResultDecline
+            //   controlId 2 -> EMessage_ResultThirdOption
+            //   controlId 3 -> EMessage_ResultFourthOption
+            // controlId reported is the button's id, which
+            // populateMessageBoxSibling sets to the sequence
+            // counter (0 for the first visible button, etc.).
+            // With the sibling-overlay model g_current_scene_name
+            // is still the underlying scene, so this keys off
+            // g_pending_dialog instead.
+            MCLEDialogResult r = MCLEDialogResultCancelled;
+            switch (listId) {
+                case 0: r = MCLEDialogResultAccept;   break;
+                case 1: r = MCLEDialogResultDecline;  break;
+                case 2: r = MCLEDialogResultThird;    break;
+                case 3: r = MCLEDialogResultFourth;   break;
+                default: break;
+            }
+            // UIScene_MessageBox::handlePress leaves through navigateBack,
+            // which makes the back sound
+            MCLEPlayUISFX("back");
+            host::main_async([=] {
+                Host* vc = g_active_vc;
+                if (vc) vc->finishDialogWithResult(r);
+            });
+        } else {
+            host::log("[handlePress] scene=%s list=%d item=%d (unhandled)",
+                  g_current_scene_name.c_str(), listId, itemId);
+        }
+    } else if (strcmp(method, "handleFocusChange") == 0) {
+        // UIScene::_handleFocusChange, for the scene or the message box over
+        // it. The scenes in the game's own code make the sound themselves.
+        {
+            int& control = g_pending_dialog ? g_dialog_focus_control : g_scene_focus_control;
+            int& child = g_pending_dialog ? g_dialog_focus_child : g_scene_focus_child;
+            const bool changed = control != (int)id || child != (int)value;
+            control = (int)id;
+            child = (int)value;
+            const bool own = !g_pending_dialog &&
+                (mcle_container_is_open() || mcle_keyboard_front_end_is_open());
+            if (changed && !own && !g_focus_restoring) MCLEPlayUISFX("focus");
+        }
+        if (mcle_container_is_open() && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { mcle_container_focus_change(cid, child, false); });
+            return;
+        }
+        if (mcle_keyboard_front_end_is_open() && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { mcle_keyboard_front_end_focus_change(cid, child, false); });
+            return;
+        }
+        // UIScene_ControlsMenu::handleFocusChange: show the layout being
+        // looked at, from tick
+        if (g_current_scene_name == "Controls1080.swf") {
+            int control = (int)id;
+            if (control >= 0 && control <= 2) {
+                g_controls_layout = control;
+                g_controls_layout_changed = true;
+            }
+            return;
+        }
+        if (g_current_scene_name == "LaunchMoreOptionsMenu1080.swf") {
+            int cid = (int)id;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->moreOptionsFocus(cid);
+            });
+            return;
+        }
+        // UIScene_LoadOrJoinMenu::handleFocusChange
+        if (g_current_scene_name == "LoadOrJoinMenu1080.swf" && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { MCLELoadOrJoinFocusChange(cid, child); });
+        }
+    } else if (strcmp(method, "handleSelectionChanged") == 0) {
+        // IUIScene_StartGame::handleSelectionChanged, the texture pack under the cursor
+        if (g_current_scene_name == "CreateWorldMenu1080.swf" ||
+            g_current_scene_name == "LoadMenu1080.swf") {
+            int selectedId = (int)id;
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->startGameSelectionChanged(selectedId);
+            });
+        }
+    } else if (strcmp(method, "handleRequestMoreData") == 0) {
+        // UIScene_Credits::handleRequestMoreData, picked up by its tick
+        if (g_current_scene_name == "Credits1080.swf") g_credits_add_next = true;
+        // UIScene_EndPoem::handleRequestMoreData(startIndex)
+        if (g_current_scene_name == "EndPoem1080.swf") g_endpoem_requested = (int)id;
+    } else if (strcmp(method, "handleAnimationEnd") == 0) {
+        // UIScene_SkinSelectMenu::handleAnimationEnd only changes the
+        // scene's own state, so it's safe from inside the movie's tick
+        if (g_current_scene_name == "SkinSelectMenu1080.swf") mcle_skin_select_animation_end();
+        // UIScene_Intro::handleAnimationEnd changes scene, so after the tick
+        if (g_current_scene_name == "Intro1080.swf") {
+            host::main_async([=] {
+                if (g_active_vc) g_active_vc->introNavigate();
+            });
+        }
+    } else if (strcmp(method, "handleInitFocus") == 0) {
+        // UIScene::_handleInitFocus
+        if (g_pending_dialog) {
+            g_dialog_focus_control = (int)id;
+            g_dialog_focus_child = (int)value;
+        } else {
+            g_scene_focus_control = (int)id;
+            g_scene_focus_child = (int)value;
+        }
+        if (mcle_container_is_open() && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { mcle_container_focus_change(cid, child, true); });
+            return;
+        }
+        if (mcle_keyboard_front_end_is_open() && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { mcle_keyboard_front_end_focus_change(cid, child, true); });
+            return;
+        }
+        // UIScene::_handleInitFocus goes on to handleFocusChange
+        if (g_current_scene_name == "LoadOrJoinMenu1080.swf" && !g_pending_dialog) {
+            int cid = (int)id;
+            int child = (int)value;
+            host::main_async([=] { MCLELoadOrJoinFocusChange(cid, child); });
+            return;
+        }
+        // LCE fires this once per scene when SetFocus(-1) finds
+        // the tabIndex==1 child (FJ_Document.SetFocus line 81-160,
+        // OnFocusChange(false) calls through to handleInitFocus).
+        // Purely informational for now; logging helps verify the
+        // SetFocus path is firing as expected.
+        host::log("[handleInitFocus] scene=%s control=%d child=%d",
+              g_current_scene_name.c_str(), (int)id, (int)value);
+    }
+}
+
+// IggyPlayerCallMethodRS on a value path, e.g. "MainPanel.GameName".
+static int MCLECallPath(const std::string& path, const std::string& method, const host::Args& args) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return 0;
+    size_t n = args.size();
+    std::vector<int> kinds(n);
+    std::vector<double> nums(n);
+    std::vector<const uint8_t*> strs(n);
+    std::vector<size_t> lens(n);
+    for (size_t i = 0; i < n; ++i) {
+        const host::Arg& a = args[i];
+        if (a.kind == host::Arg::String) {
+            kinds[i] = 2;
+            strs[i] = (const uint8_t*)a.string.data();
+            lens[i] = a.string.size();
+        } else if (a.kind == host::Arg::Bool) {
+            kinds[i] = 1;
+            nums[i] = a.number != 0.0 ? 1.0 : 0.0;
+        } else {
+            kinds[i] = 0;
+            nums[i] = a.number;
+        }
+    }
+    const char* pth = path.c_str();
+    const char* m = method.c_str();
+    return ruffle_ios_call_child_path(g_ruffle_player,
+        (const uint8_t*)pth, strlen(pth), (const uint8_t*)m, strlen(m),
+        kinds.data(), nums.data(), strs.data(), lens.data(), n);
+}
+
+// IggyPlayerDispatchEventRS for UIScene::sendInputToMovie's key
+static void MCLEEndPoemSendKey(int iggyKeyCode, int down) {
+    extern PlayerHandle* g_ruffle_player;
+    if (g_ruffle_player) ruffle_ios_player_key(g_ruffle_player, iggyKeyCode, down);
+}
+
+// UIScene_EndPoem::handleInput, which does nothing once m_bIgnoreInput is set
+static void MCLEEndPoemInput(void) {
+    static uint32_t s_prevButtons = 0;
+    mcle_ios_pad_state pad = {};
+    mcle_ios_input_poll(0, &pad);
+    const uint32_t buttons = g_endpoem_ignore_input ? 0 : pad.buttons;
+    mcle_end_poem_input(buttons, s_prevButtons, MCLEEndPoemSendKey);
+    s_prevButtons = buttons;
+}
+
+// UIControl_SpaceIndicatorBar over the save list. Bar values are 0..1 of
+// MAXIMUM_SAVE_STORAGE (4GB) like upstream.
+static void MCLESelectSaveSize(int saveIndex) {
+    const double kMax = 4.0 * 1024.0 * 1024.0 * 1024.0;
+    double total = 0, offset = 0, size = 0;
+    for (int i = 0; i < mcle_saves_count(); ++i) {
+        double s = (double)mcle_saves_size(i);
+        if (i == saveIndex) { offset = total / kMax; size = s / kMax; }
+        total += s;
+    }
+    MCLECallPath("SaveSizeBar", "setTotalSize", { total / kMax });
+    MCLECallPath("SaveSizeBar", "setSaveGameSize", { size });
+    MCLECallPath("SaveSizeBar", "setSaveGameOffset", { offset });
+}
+
+// UIScene_LoadOrJoinMenu::DoesSavesListHaveFocus, a save rather than Create
+// New World or a level generator
+static bool MCLELoadOrJoinSavesListHasFocus(void) {
+    return g_load_focus_control == 0 && g_load_save_list_index > g_load_default_buttons - 1;
+}
+
+// UIScene_LoadOrJoinMenu::DoesMashUpWorldHaveFocus
+static bool MCLELoadOrJoinMashUpWorldHasFocus(void) {
+    if (g_load_focus_control != 0) return false;
+    // check it's not the first or second element (new world or tutorial)
+    if (g_load_save_list_index > g_load_default_buttons - 1) return false;
+    return g_load_save_list_index > g_load_default_buttons - 1 - g_load_mashup_buttons;
+}
+
+// UIScene_LoadOrJoinMenu::updateTooltips. The join list is always empty and
+// there's no party. Saving is never disabled and EnoughSpaceForAMinSaveGame
+// is always true in the Windows64 storage, so a save gets Save Options. X
+// is Change Storage Device, which SetTooltips takes off.
+static void MCLELoadOrJoinTooltips(void) {
+    int iRB = -1;
+    if (MCLELoadOrJoinSavesListHasFocus()) {
+        if (g_load_default_buttons > 0 && g_load_save_list_index >= g_load_default_buttons) {
+            iRB = IDS_TOOLTIPS_SAVEOPTIONS;
+        }
+    } else if (MCLELoadOrJoinMashUpWorldHasFocus()) {
+        // If it's a mash-up pack world, give the Hide option
+        iRB = IDS_TOOLTIPS_HIDE;
+    }
+    int ids[11] = { IDS_TOOLTIPS_SELECT, IDS_TOOLTIPS_BACK, IDS_TOOLTIPS_CHANGEDEVICE, -1, -1, -1, -1, iRB, -1, -1, -1 };
+    MCLESetTooltips(ids);
+}
+
+// UIScene::_handleFocusChange then UIScene_LoadOrJoinMenu::handleFocusChange,
+// from the movie's callback once it's done
+static void MCLELoadOrJoinFocusChange(int controlId, int childId) {
+    if (g_current_scene_name != "LoadOrJoinMenu1080.swf" || g_pending_dialog) return;
+    g_load_focus_control = controlId;
+    if (controlId == 0) {   // eControl_SavesList
+        g_load_save_list_index = childId;
+        // m_bUpdateSaveSize, the bar shows the focused save
+        MCLESelectSaveSize(childId - g_load_default_buttons);
+    }
+    MCLELoadOrJoinTooltips();
+}
+
+static void MCLESetPathVisible(const std::string& path, bool visible) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    const char* pth = path.c_str();
+    ruffle_ios_set_child_path_visible(g_ruffle_player, (const uint8_t*)pth, strlen(pth), visible ? 1 : 0);
+}
+
+// UIComponent_PressStartToPlay's controls: a call or setVisible on its movie
+static void MCLEPressStartCall(const std::string& path, const std::string& method, const host::Args& args) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    size_t n = args.size();
+    std::vector<int> kinds(n);
+    std::vector<double> nums(n);
+    std::vector<const uint8_t*> strs(n);
+    std::vector<size_t> lens(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (args[i].kind == host::Arg::String) {
+            kinds[i] = 2;
+            strs[i] = (const uint8_t*)args[i].string.data();
+            lens[i] = args[i].string.size();
+        } else {
+            kinds[i] = 0;
+            nums[i] = args[i].number;
+        }
+    }
+    const char* pth = path.c_str();
+    const char* m = method.c_str();
+    ruffle_ios_call_sibling_path(g_ruffle_player, kPressStartToPlayDepth, (const uint8_t*)pth, strlen(pth),
+                                 (const uint8_t*)m, strlen(m), kinds.data(), nums.data(), strs.data(), lens.data(), n);
+}
+
+static void MCLEPressStartVisible(const std::string& path, bool visible) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    const char* pth = path.c_str();
+    ruffle_ios_set_sibling_path_visible(g_ruffle_player, kPressStartToPlayDepth, (const uint8_t*)pth, strlen(pth),
+                                        visible ? 1 : 0);
+}
+
+// UIComponent_PressStartToPlay constructor, once its movie is up
+static void MCLEPressStartToPlayInit(void) {
+    MCLEPressStartCall("", "SetSafeZone", { kSafeZoneTop, kSafeZoneBottom, kSafeZoneLeft, kSafeZoneRight });
+    MCLEPressStartCall("TrialTimer", "Init", { "" });
+    MCLEPressStartVisible("TrialTimer", false);
+    MCLEPressStartCall("MainPanel.PressStartLabel", "Init", { MCLEStr(IDS_PRESS_START_TO_JOIN) });
+    MCLEPressStartVisible("SaveIcon", false);
+    MCLEPressStartVisible("MainPanel", false);
+    MCLEPressStartVisible("PlayerName", false);
+}
+
+// UIController::ShowAutosaveCountdownTimer, the component's showTrialTimer
+static bool g_autosave_countdown_shown = false;
+static void MCLEShowAutosaveCountdownTimer(bool show) {
+    if (show == g_autosave_countdown_shown) return;
+    g_autosave_countdown_shown = show;
+    MCLEPressStartVisible("TrialTimer", show);
+}
+
+// UIController::UpdateAutosaveCountdownTimer: IDS_AUTOSAVE_COUNTDOWN with
+// the seconds, the component's setTrialTimer
+static void MCLEUpdateAutosaveCountdownTimer(unsigned int seconds) {
+    static int s_shown = -1;
+    if ((int)seconds == s_shown) return;
+    s_shown = (int)seconds;
+    std::string text = host::replace_all(MCLEStr(IDS_AUTOSAVE_COUNTDOWN), "%d", std::to_string(seconds));
+    MCLEPressStartCall("TrialTimer", "SetLabel", { text });
+}
+
+// UIComponent_Panorama::tick: night once the loaded overworld is past 14000
+// in its day, day otherwise (no level, or the Nether / End)
+static bool s_showingDay = true;
+
+static void MCLEPanoramaTick(void) {
+    extern PlayerHandle* g_ruffle_player;
+    long long gameTime = 0;
+    int dimension = 0;
+    long long timeOfDay = 0;
+    if (mcle_world_game_time(&gameTime, &dimension) && dimension == 0) timeOfDay = gameTime % 24000;
+    bool day = timeOfDay <= 14000;
+    if (day != s_showingDay && g_ruffle_player) {
+        s_showingDay = day;
+        double arg = day ? 1.0 : 0.0;
+        ruffle_ios_call_method_on_sibling_root(g_ruffle_player, -2, (const uint8_t*)"ShowPanoramaDay", 15, &arg, 1);
+    }
+}
+
+// UIScene_HUD. What was last sent to the movie, starting from the values
+// IUIScene_HUD's constructor sets, so each setter only calls in on a change.
+static struct {
+    int activeSlot, guiScale, expLevel, maxHealth, food, air, armour, saturation, healthAbsorb;
+    float expProgress;
+    bool healthBlink, healthPoison, healthWither, foodPoison, regen, visible;
+    bool showHealth, showHorseHealth, showFood, showAir, showArmour, showExpBar;
+    bool ridingHorse, isJumpable, tooltipsVisible;
+    int horseMaxHealth, horseHealth;
+    float horseJumpProgress;
+    char displayName[64];
+    int labelCalls, hideLabelCalls;
+    float opacity;
+    float lastDragonHealth;
+    bool showDragonHealth;
+    int ticksWithNoBoss;
+} g_hud;
+
+static void MCLEHudChatReset(void);
+
+static void MCLEHudReset(void) {
+    g_hud.activeSlot = -1;
+    g_hud.guiScale = -1;
+    g_hud.expProgress = 0.0f;
+    g_hud.expLevel = 0;
+    g_hud.maxHealth = 20;
+    g_hud.healthBlink = false;
+    g_hud.healthPoison = false;
+    g_hud.healthWither = true;
+    g_hud.food = -1;
+    g_hud.foodPoison = false;
+    g_hud.air = 10;
+    g_hud.armour = 0;
+    g_hud.showHealth = g_hud.showFood = g_hud.showAir = g_hud.showArmour = g_hud.showExpBar = true;
+    g_hud.showHorseHealth = true;
+    g_hud.ridingHorse = true;
+    g_hud.isJumpable = false;
+    g_hud.horseHealth = 1;
+    g_hud.horseMaxHealth = -1;
+    g_hud.horseJumpProgress = 1.0f;
+    g_hud.tooltipsVisible = true;
+    g_hud.displayName[0] = 0;
+    g_hud.regen = false;
+    g_hud.saturation = 0;
+    g_hud.healthAbsorb = -1;
+    g_hud.visible = true;
+    // Label calls from before this scene don't carry over
+    MCLEHudState st;
+    mcle_hud_get_state(&st);
+    g_hud.labelCalls = st.labelCalls;
+    g_hud.hideLabelCalls = st.hideLabelCalls;
+    // UIScene sends the opacity once a scene has loaded
+    g_hud.opacity = -1.0f;
+    g_hud.lastDragonHealth = 0.0f;
+    g_hud.showDragonHealth = false;
+    g_hud.ticksWithNoBoss = 0;
+    MCLEHudChatReset();
+}
+
+// UIScene_HUD::tick: the boss's health bar
+static void MCLEHudBossTick(void) {
+    float health = 0.0f;
+    char name[128];
+    if (!mcle_hud_boss(&health, name, sizeof(name))) {
+        if (g_hud.showDragonHealth) {
+            // No boss and health is visible
+            if (g_hud.ticksWithNoBoss <= 20) {
+                ++g_hud.ticksWithNoBoss;
+            } else {
+                // ShowDragonHealth(false)
+                g_hud.showDragonHealth = false;
+                MCLECallPath("", "ShowDragonHealthBar", { false });
+            }
+        }
+    } else {
+        g_hud.ticksWithNoBoss = 0;
+        // SetDragonHealth
+        if (health != g_hud.lastDragonHealth) {
+            g_hud.lastDragonHealth = health;
+            MCLECallPath("", "SetDragonHealth", { health });
+        }
+        if (!g_hud.showDragonHealth) {
+            std::string label = std::string(name);
+            MCLECallPath("", "SetDragonLabel", { label });
+            g_hud.showDragonHealth = true;
+            MCLECallPath("", "ShowDragonHealthBar", { true });
+        }
+    }
+}
+
+static void MCLEHudShow(const std::string& fn, bool show, bool& last) {
+    if (show != last) {
+        last = show;
+        MCLECallPath("", fn, { show });
+    }
+}
+
+static void MCLEHudNumber(const std::string& fn, int value, int& last) {
+    if (value != last) {
+        last = value;
+        MCLECallPath("", fn, { value });
+    }
+}
+
+// UIScene_HUD::SetRidingHorse
+static void MCLEHudSetRidingHorse(bool ridingHorse, bool isJumpable, int maxHorseHealth) {
+    if (g_hud.ridingHorse != ridingHorse || maxHorseHealth != g_hud.horseMaxHealth) {
+        g_hud.ridingHorse = ridingHorse;
+        g_hud.isJumpable = isJumpable;
+        g_hud.horseMaxHealth = maxHorseHealth;
+        MCLECallPath("", "SetRidingHorse", { ridingHorse, isJumpable, maxHorseHealth });
+    }
+}
+
+// UIScene_HUD::SetHealthAbsorb
+static void MCLEHudSetHealthAbsorb(int healthAbsorb) {
+    if (g_hud.healthAbsorb != healthAbsorb) {
+        g_hud.healthAbsorb = healthAbsorb;
+        MCLECallPath("", "SetHealthAbsorb", { healthAbsorb > 0, healthAbsorb });
+    }
+}
+
+// IUIScene_HUD::renderPlayerHealth
+static void MCLEHudRenderPlayerHealth(const MCLEHudState& st) {
+    MCLEHudShow("ShowHealth", true, g_hud.showHealth);
+    MCLEHudShow("SetRegenerationEffect", st.regen != 0, g_hud.regen);
+
+    // SetHealth: the bigger of now and last, so a hit flashes the lost hearts
+    int maxHealth = std::max(st.health, st.lastHealth);
+    bool blink = st.blink != 0, poison = st.poison || st.wither, wither = st.wither != 0;
+    if (maxHealth != g_hud.maxHealth || blink != g_hud.healthBlink ||
+        poison != g_hud.healthPoison || wither != g_hud.healthWither) {
+        g_hud.maxHealth = maxHealth;
+        g_hud.healthBlink = blink;
+        g_hud.healthPoison = poison;
+        g_hud.healthWither = wither;
+        MCLECallPath("", "SetHealth", { maxHealth, blink, poison, wither });
+    }
+    MCLEHudSetHealthAbsorb((int)st.absorption);
+
+    if (st.armour > 0) {
+        MCLEHudShow("ShowArmour", true, g_hud.showArmour);
+        MCLEHudNumber("SetArmour", st.armour, g_hud.armour);
+    } else {
+        MCLEHudShow("ShowArmour", false, g_hud.showArmour);
+    }
+
+    if (st.riding != 2) {
+        MCLEHudSetRidingHorse(false, false, 0);
+
+        MCLEHudShow("ShowFood", true, g_hud.showFood);
+        MCLEHudShow("ShowHorseHealth", false, g_hud.showHorseHealth);
+        g_hud.horseHealth = 0;
+
+        // Food doesn't flash, so only the current level counts
+        bool hunger = st.hunger != 0;
+        if (st.food != g_hud.food || hunger != g_hud.foodPoison) {
+            g_hud.food = st.food;
+            g_hud.foodPoison = hunger;
+            MCLECallPath("", "SetFood", { st.food, hunger });
+        }
+        MCLEHudNumber("SetFoodSaturationLevel", st.saturation, g_hud.saturation);
+
+        if (st.underWater) {
+            MCLEHudShow("ShowAir", true, g_hud.showAir);
+            MCLEHudNumber("SetAir", st.air, g_hud.air);
+        } else {
+            MCLEHudShow("ShowAir", false, g_hud.showAir);
+        }
+    } else {
+        MCLEHudSetRidingHorse(true, st.ridingJumpable != 0, st.riderMaxHealth);
+        // SetHorseHealth
+        if (g_hud.ridingHorse && g_hud.horseHealth != st.riderHealth) {
+            g_hud.horseHealth = st.riderHealth;
+            MCLECallPath("", "SetHorseHealth", { st.riderHealth, false });
+        }
+        MCLEHudShow("ShowHorseHealth", true, g_hud.showHorseHealth);
+    }
+}
+
+extern "C" float mcle_hud_chat_line(int index, char *out, int cap);
+extern "C" float mcle_hud_jukebox(char *out, int cap);
+
+// UIControl::setOpacity and setLabel on the HUD's chat lines, what was last
+// sent starting from UIControl's 1.0 / unset
+static struct {
+    float labelOpacity[10], backgroundOpacity[10], jukeboxOpacity;
+    char label[10][1024], jukebox[1024];
+    bool labelSet[10], jukeboxSet;
+    double lastTimer;
+} g_hudChat;
+
+static void MCLEHudChatReset(void) {
+    for (int i = 0; i < 10; ++i) {
+        g_hudChat.labelOpacity[i] = 1.0f;
+        g_hudChat.backgroundOpacity[i] = 1.0f;
+        g_hudChat.labelSet[i] = false;
+    }
+    g_hudChat.jukeboxOpacity = 1.0f;
+    g_hudChat.jukeboxSet = false;
+    g_hudChat.lastTimer = 0;
+}
+
+static void MCLEHudControlAlpha(const std::string& control, float opacity, float& last) {
+    if (opacity != last) {
+        last = opacity;
+        MCLECallPath("", "SetControlAlpha", { control, opacity });
+    }
+}
+
+static void MCLEHudLabel(const std::string& control, const char* text, char* last, bool& set) {
+    if (!set || strcmp(text, last) != 0) {
+        set = true;
+        snprintf(last, 1024, "%s", text);
+        std::string str = std::string(text ? text : "");
+        MCLECallPath(control, "SetLabel", { str });
+    }
+}
+
+// UIScene_HUD::handleTimerComplete, every 100ms (addTimer(0, 100)). Each
+// line shows while its message is fading, Win64's Gui::render chat aside.
+static void MCLEHudChatTimer(void) {
+    double now = host::now();
+    if (now - g_hudChat.lastTimer < 0.1) return;
+    g_hudChat.lastTimer = now;
+    char text[1024];
+    for (int i = 0; i < 10; ++i) {
+        std::string label = host::format("Label%d", i + 1);
+        std::string background = host::format("Label%dBackground", i + 1);
+        float opacity = mcle_hud_chat_line(i, text, sizeof(text));
+        if (opacity > 0) {
+            MCLEHudControlAlpha(background, opacity, g_hudChat.backgroundOpacity[i]);
+            MCLEHudControlAlpha(label, opacity, g_hudChat.labelOpacity[i]);
+            MCLEHudLabel(label, text, g_hudChat.label[i], g_hudChat.labelSet[i]);
+        } else {
+            MCLEHudControlAlpha(background, 0, g_hudChat.backgroundOpacity[i]);
+            MCLEHudControlAlpha(label, 0, g_hudChat.labelOpacity[i]);
+            MCLEHudLabel(label, "", g_hudChat.label[i], g_hudChat.labelSet[i]);
+        }
+    }
+    float jukebox = mcle_hud_jukebox(text, sizeof(text));
+    MCLEHudControlAlpha("Jukebox", jukebox, g_hudChat.jukeboxOpacity);
+    MCLEHudLabel("Jukebox", text, g_hudChat.jukebox, g_hudChat.jukeboxSet);
+}
+
+// The chat lines' background strips (Label1Background to Label10Background)
+// run the width of HUD1080's 16:9 stage, from one side of TU19's screen to
+// the other. On a wider screen they go on to its sides.
+static void MCLEHudExtendChatStrips(void) {
+    extern PlayerHandle* g_ruffle_player;
+    static const int depths[] = { 7, 9, 11, 13, 15, 17, 19, 21, 23, 25 };
+    MCLEExtendStripsToScreen(g_ruffle_player, g_active_vc ? platform::view_size() : host::Size(), depths, 10);
+}
+
+// IUIScene_HUD::updateFrameTick, called every frame in game
+static void MCLEHudPump(void) {
+    MCLEHudState st;
+    mcle_hud_get_state(&st);
+    if (!st.valid) return;
+
+    MCLEHudBossTick();
+    MCLEHudChatTimer();
+
+    // SetHudSize -> LoadHud
+    const int hudSize = g_hud.guiScale;
+    MCLEHudNumber("LoadHud", mcle_settings_get(MCLE_SETTING_UISize), g_hud.guiScale);
+    // A new HUD movie loads its size first
+    if (g_hud.guiScale != hudSize) MCLEHudExtendChatStrips();
+
+    // SetDisplayName. UIController::DisplayGamertag has the label hidden
+    // on a full screen.
+    if (strcmp(st.displayName, g_hud.displayName) != 0) {
+        snprintf(g_hud.displayName, sizeof(g_hud.displayName), "%s", st.displayName);
+        std::string name = std::string(st.displayName);
+        MCLECallPath("", "SetGamertag", { name });
+        MCLESetPathVisible("LabelGamertag", false);
+    }
+
+    // SetTooltipsEnabled, with no menu up while this runs
+    MCLEHudShow("SetTooltipsEnabled", mcle_settings_get(MCLE_SETTING_Tooltips) != 0, g_hud.tooltipsVisible);
+
+    MCLEHudNumber("SetActiveSlot", st.activeSlot, g_hud.activeSlot);
+
+    if (st.canHurtPlayer) {
+        MCLEHudRenderPlayerHealth(st);
+    } else {
+        MCLEHudSetRidingHorse(st.riding != 0, st.riding != 0 && st.ridingJumpable != 0, 0);
+        MCLEHudShow("ShowHorseHealth", false, g_hud.showHorseHealth);
+        g_hud.horseHealth = 0;
+        MCLEHudShow("ShowHealth", false, g_hud.showHealth);
+        MCLEHudShow("ShowFood", false, g_hud.showFood);
+        MCLEHudShow("ShowAir", false, g_hud.showAir);
+        MCLEHudShow("ShowArmour", false, g_hud.showArmour);
+        MCLEHudShow("ShowExpBar", false, g_hud.showExpBar);
+        MCLEHudSetHealthAbsorb(0);
+    }
+
+    if (st.ridingJumpable) {
+        // SetHorseJumpBarProgress
+        if (g_hud.ridingHorse && g_hud.horseJumpProgress != st.jumpRidingScale) {
+            g_hud.horseJumpProgress = st.jumpRidingScale;
+            MCLECallPath("", "SetHorseJumpBarProgress", { st.jumpRidingScale });
+        }
+    } else if (st.hasExperience) {
+        MCLEHudShow("ShowExpBar", true, g_hud.showExpBar);
+        if (st.expProgress != g_hud.expProgress) {
+            g_hud.expProgress = st.expProgress;
+            MCLECallPath("", "SetExpBarProgress", { st.expProgress });
+        }
+        MCLEHudNumber("SetPlayerLevel", st.expLevel, g_hud.expLevel);
+    } else {
+        MCLEHudShow("ShowExpBar", false, g_hud.showExpBar);
+        MCLEHudNumber("SetPlayerLevel", 0, g_hud.expLevel);
+    }
+
+    // A hide comes two seconds after its label, so when both are new the
+    // hide is the older one
+    if (st.hideLabelCalls != g_hud.hideLabelCalls) {
+        g_hud.hideLabelCalls = st.hideLabelCalls;
+        MCLECallPath("", "HideSelectedLabel", {});
+    }
+    if (st.labelCalls != g_hud.labelCalls) {
+        g_hud.labelCalls = st.labelCalls;
+        std::string label = std::string(st.label);
+        MCLECallPath("", "SetSelectedLabel", { label });
+    }
+
+    // Interface Opacity, back at the default 80% for a while after the
+    // hotbar is scrolled. No menu is up while this runs.
+    {
+        unsigned char ucAlpha = mcle_settings_get(MCLE_SETTING_InterfaceOpacity);
+        float fVal;
+        if (ucAlpha < 80) {
+            if (st.opacityTimer != 0) {
+                if (st.opacityTimer < 10) {
+                    float fStep = (80.0f - static_cast<float>(ucAlpha)) / 10.0f;
+                    fVal = 0.01f * (80.0f - ((10.0f - static_cast<float>(st.opacityTimer)) * fStep));
+                } else {
+                    fVal = 0.01f * 80.0f;
+                }
+            } else {
+                fVal = 0.01f * static_cast<float>(ucAlpha);
+            }
+        } else {
+            fVal = 0.01f * static_cast<float>(ucAlpha);
+        }
+        // UIScene::setOpacity
+        if (fVal != g_hud.opacity) {
+            g_hud.opacity = fVal;
+            MCLECallPath("", "SetAlpha", { fVal });
+        }
+        // The tooltip strip follows the same timer, sent when it changes
+        MCLETooltipsApplyOpacity(false, st.opacityTimer, false);
+    }
+
+    // SetVisible: shown while playing with Display HUD on
+    bool visible = mcle_settings_get(MCLE_SETTING_DisplayHUD) != 0;
+    if (visible != g_hud.visible) {
+        g_hud.visible = visible;
+        MCLESetPathVisible("", visible);
+    }
+}
+
+// UIComponent_Tooltips, the one strip the menus and the HUD share. What
+// each slot shows, sent only when it changes like _SetTooltip, then one
+// relayout. Slots go A, B, X, Y, LT, RT, LB, RB, LS, RS, Back. It starts
+// out unknown so the first call sends every slot.
+static struct {
+    int ids[11];
+    bool shown[11];
+    int enabled; // in game: the In-Game Tooltips setting last applied, -1 unknown
+    bool known;
+} g_tooltips;
+
+static void MCLESetTooltips(const int in[11]) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    if (!g_tooltips.known) {
+        for (int i = 0; i < 11; i++) {
+            g_tooltips.ids[i] = -3;
+            g_tooltips.shown[i] = true;
+        }
+        g_tooltips.known = true;
+    }
+    bool relayout = false;
+    for (int i = 0; i < 11; i++) {
+        int id = in[i];
+        // UIController::SetTooltips strips out the storage device ones off
+        // the 360
+        if (i == 2 && (id == IDS_TOOLTIPS_SELECTDEVICE || id == IDS_TOOLTIPS_CHANGEDEVICE)) id = -1;
+        if (id == g_tooltips.ids[i] && !(id > -1 && !g_tooltips.shown[i])) continue;
+        g_tooltips.ids[i] = id;
+        relayout = true;
+        bool show = id > -1 || id == -2;
+        // _SetTooltip skips hiding one that isn't showing
+        if (!show && !g_tooltips.shown[i]) continue;
+        g_tooltips.shown[i] = show;
+        const char* label = id > -1 ? mcle_string(id) : "";
+        ruffle_ios_call_set_tooltip(g_ruffle_player, kTooltipsDepth, i, (const uint8_t*)label, strlen(label),
+                                    show ? 1 : 0);
+    }
+    if (relayout) {
+        const char* updateName = "UpdateLayout";
+        ruffle_ios_call_method_on_sibling_root(g_ruffle_player, kTooltipsDepth, (const uint8_t*)updateName,
+                                               strlen(updateName), NULL, 0);
+    }
+}
+
+// UIController::AnimateKeyPress: a press goes into the tooltips movie
+// through UIComponent_Tooltips::handleInput, and its glyph animates
+static void MCLEAnimateKeyPress(int iggyKeyCode) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player || iggyKeyCode < 0) return;
+    ruffle_ios_sibling_key(g_ruffle_player, kTooltipsDepth, iggyKeyCode, 1);
+}
+
+// enterWorldUI hides the strip, the next pump puts it back per the setting
+static void MCLEGameTooltipsReset(void) {
+    g_tooltips.enabled = -1;
+}
+
+// UIComponent_Tooltips::tick: the strip follows Interface Opacity, back at
+// 80% for a while after the hotbar scrolls, and never under 15% with a menu
+// up. setOpacity only calls the movie when it changes, or when the scene is
+// fresh (force). It's sent when a scene seeds the strip, when the setting
+// changes, and from the HUD pump in game, never polled.
+static float g_tooltips_alpha = -1.0f;
+static void MCLETooltipsApplyOpacity(bool menuDisplayed, int opacityTimer, bool force) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    unsigned char ucAlpha = mcle_settings_get(MCLE_SETTING_InterfaceOpacity);
+    if (menuDisplayed && ucAlpha < 15) ucAlpha = 15;
+    float fVal;
+    if (ucAlpha < 80 && opacityTimer != 0) {
+        if (opacityTimer < 10) {
+            float fStep = (80.0f - static_cast<float>(ucAlpha)) / 10.0f;
+            fVal = 0.01f * (80.0f - ((10.0f - static_cast<float>(opacityTimer)) * fStep));
+        } else {
+            fVal = 0.01f * 80.0f;
+        }
+    } else {
+        fVal = 0.01f * static_cast<float>(ucAlpha);
+    }
+    if (!force && fVal == g_tooltips_alpha) return;
+    g_tooltips_alpha = fVal;
+    const char* setAlpha = "SetAlpha";
+    double value = fVal;
+    ruffle_ios_call_method_on_sibling_root(g_ruffle_player, kTooltipsDepth,
+        (const uint8_t*)setAlpha, strlen(setAlpha), &value, 1);
+}
+
+// The strip's movie went up again on a new skin, like UIComponent_Tooltips
+// in UIController::ReloadSkin's ReloadAll: it gets back the safe zone,
+// opacity and buttons it had
+static void MCLETooltipsMovieReloaded(void) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    const char* setSafe = "SetSafeZone";
+    double safe[4] = { kSafeZoneTop, kSafeZoneBottom, kSafeZoneLeft, kSafeZoneRight };
+    ruffle_ios_call_method_on_sibling_root(g_ruffle_player, kTooltipsDepth,
+        (const uint8_t*)setSafe, strlen(setSafe), safe, 4);
+    if (g_tooltips_alpha >= 0.0f) {
+        const char* setAlpha = "SetAlpha";
+        double value = g_tooltips_alpha;
+        ruffle_ios_call_method_on_sibling_root(g_ruffle_player, kTooltipsDepth,
+            (const uint8_t*)setAlpha, strlen(setAlpha), &value, 1);
+    }
+    if (g_tooltips.known) {
+        int ids[11];
+        std::copy(g_tooltips.ids, g_tooltips.ids + 11, ids);
+        g_tooltips.known = false;
+        MCLESetTooltips(ids);
+    }
+    // In game the HUD pump shows it again per the setting
+    g_tooltips.enabled = -1;
+}
+
+// In game: Minecraft::tick's tooltips
+static void MCLEGameTooltipsPump(void) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    // UIComponent_Tooltips::render: with no menu up the strip is off when
+    // In-Game Tooltips or Display HUD is
+    int enabled = (mcle_settings_get(MCLE_SETTING_Tooltips) != 0 &&
+                   mcle_settings_get(MCLE_SETTING_DisplayHUD) != 0) ? 1 : 0;
+    if (enabled != g_tooltips.enabled) {
+        g_tooltips.enabled = enabled;
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, enabled);
+    }
+
+    int ids[11];
+    mcle_tooltips_get(ids);
+    ids[10] = -1;
+    MCLESetTooltips(ids);
+}
+
+extern "C" unsigned long long mcle_swf_total_mesh_strips(void);
+extern "C" unsigned long long mcle_swf_total_triangles(void);
+extern "C" unsigned long long mcle_swf_total_frames(void);
+extern "C" unsigned long long mcle_swf_total_bitmap_draws(void);
+extern "C" unsigned long long mcle_swf_total_line_strips(void);
+extern "C" unsigned long long mcle_swf_total_masks(void);
+extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
+
+// UIController::loadSkins, Windows64's: each skin library from the selected
+// texture pack's media archive when it has one (CMinecraftApp::getArchiveFile),
+// else the game's own in Documents. The movies loaded from now on import
+// these. A library goes back to the file only after a pack replaced it,
+// or for the platform skins when the pad gave them another skin.
+static void MCLEReloadSkinLibraries(bool platformChanged = false) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    std::string docs = host::documents_dir();
+    if (docs.empty()) return;
+    // The platform skins are the ones their aliases were made from
+    std::function<std::string(const std::string&, const std::string&)> platformSkin =
+        [=](const std::string& alias, const std::string& skin) -> std::string {
+        std::string marker = host::path_join(docs, alias) + ".source";
+        std::string source = host::read_text_file(marker);
+        return !source.empty() ? source : skin;
+    };
+    std::vector<std::vector<std::string>> skins = {
+        { platformSkin("platformskinHD.swf", "skinHDWin.swf"), "platformskinHD.swf" },
+        { platformSkin("platformskin.swf", "skinWin.swf"), "platformskin.swf" },
+        { "skinGraphics.swf", "skinGraphics.swf" },
+        { "skinGraphicsHud.swf", "skinGraphicsHud.swf" },
+        { "skinGraphicsInGame.swf", "skinGraphicsInGame.swf" },
+        { "skinGraphicsTooltips.swf", "skinGraphicsTooltips.swf" },
+        { "skinGraphicsLabels.swf", "skinGraphicsLabels.swf" },
+        { "skinLabels.swf", "skinLabels.swf" },
+        { "skinInGame.swf", "skinInGame.swf" },
+        { "skinHud.swf", "skinHud.swf" },
+        { "skinTooltips.swf", "skinTooltips.swf" },
+        { "skin.swf", "skin.swf" },
+        { "skinHDGraphics.swf", "skinHDGraphics.swf" },
+        { "skinHDGraphicsHud.swf", "skinHDGraphicsHud.swf" },
+        { "skinHDGraphicsInGame.swf", "skinHDGraphicsInGame.swf" },
+        { "skinHDGraphicsTooltips.swf", "skinHDGraphicsTooltips.swf" },
+        { "skinHDGraphicsLabels.swf", "skinHDGraphicsLabels.swf" },
+        { "skinHDLabels.swf", "skinHDLabels.swf" },
+        { "skinHDInGame.swf", "skinHDInGame.swf" },
+        { "skinHDHud.swf", "skinHDHud.swf" },
+        { "skinHDTooltips.swf", "skinHDTooltips.swf" },
+        { "skinHD.swf", "skinHD.swf" },
+    };
+    // A pack's own Windows64 platform skin under the PS4 one's buttons
+    std::function<bool(const std::string&, std::vector<unsigned char>&)> packPlatformSkin =
+        [=](const std::string& skinPath, std::vector<unsigned char>& out) -> bool {
+        if (!host::contains(skinPath, "Orbis")) return false;
+        std::string winName = host::replace_all(skinPath, "Orbis", "Win");
+        std::vector<unsigned char> win;
+        if (!mcle_texture_pack_archive_file(MCLEWideString(winName), win)) return false;
+        std::vector<uint8_t> orbis = host::read_file(host::path_join(docs, skinPath));
+        if (orbis.empty()) return false;
+        const unsigned char* p = static_cast<const unsigned char*>(orbis.data());
+        return mcle_merge_platform_skin(std::vector<unsigned char>(p, p + orbis.size()), win, out);
+    };
+    static std::set<std::string> fromPack;
+    for (const std::vector<std::string>& skin : skins) {
+        std::string skinPath = skin[0];
+        std::string skinName = skin[1];
+        std::vector<unsigned char> bytes;
+        const bool packSkin = mcle_texture_pack_archive_file(MCLEWideString(skinPath), bytes) ||
+                              packPlatformSkin(skinPath, bytes);
+        std::string file = host::path_join(docs, skinName);
+        if (!packSkin) {
+            const bool platform = platformChanged && host::has_prefix(skinName, "platformskin");
+            if (!fromPack.count(skinName) && !platform) continue;
+            std::vector<uint8_t> data = host::read_file(file);
+            if (data.empty()) continue;
+            const unsigned char* p = static_cast<const unsigned char*>(data.data());
+            bytes.assign(p, p + data.size());
+        }
+        std::string url = host::file_url(file);
+        int rc = ruffle_ios_cache_import(g_ruffle_player,
+            (const uint8_t*)skinName.c_str(), strlen(skinName.c_str()),
+            bytes.data(), bytes.size(),
+            (const uint8_t*)url.c_str(), strlen(url.c_str()));
+        if (rc != 1) continue;
+        if (packSkin) fromPack.insert(skinName);
+        else fromPack.erase(skinName);
+    }
+}
+
+// Find a SWF to play. Preference order:
+//   1. Documents/Intro1080.swf     (UIController::postInit's first scene)
+//   2. Documents/MainMenu1080.swf  (user-supplied via Files app)
+//   3. Documents/*.swf             (anything the user dropped in)
+std::string Host::resolveSwfPath() {
+    std::string docsPath = host::documents_dir();
+
+    if (!docsPath.empty()) {
+        // UIController::postInit navigates to eUIScene_Intro
+        std::string intro = host::path_join(docsPath, "Intro1080.swf");
+        if (host::file_exists(intro)) return intro;
+        // Then MainMenu1080.swf.
+        std::string preferred = host::path_join(docsPath, "MainMenu1080.swf");
+        if (host::file_exists(preferred)) return preferred;
+
+        // Next, scan the Documents root for any .swf.
+        std::vector<std::string> entries = host::list_directory(docsPath);
+        for (const std::string& e : entries) {
+            if (host::lowercase(host::path_extension(e)) == "swf") {
+                return host::path_join(docsPath, e);
+            }
+        }
+    }
+
+    return std::string();
+}
+
+// Mirror console's UIController::loadSkin aliasing (UIController.cpp
+// 540-611), where the platform-specific Windows skin SWF
+// (skinHDWin.swf) is loaded under the alias platformskinHD.swf so
+// scene SWFs that reference platformskinHD.swf find the actual
+// file. Per-platform variants exist (skinHDDurango on XB1,
+// skinHDOrbis on PS4, skinHDWin on Windows64). iOS falls
+// back to the Windows64 variant since that is what the
+// MediaWindows64.arc dump in INSTALL.md walks the user through
+// extracting.
+//
+// Symlinks aren't allowed inside the app sandbox without
+// entitlements, so make a real copy. Only runs once: skips if
+// the alias name already exists.
+// A PlayStation pad gets the PS4 skin (skinHDOrbis.swf / skinOrbis.swf,
+// what CopyPlatformSkin.bat puts in place on that platform) when it's
+// there, so the button glyphs match the pad. It's the pad that drives the
+// game, pad 0. -1 while no pad is connected.
+static int MCLEPadIsPlayStation(void) {
+    return platform::pad_is_playstation();
+}
+
+// true when an alias now holds another skin
+bool Host::installPlatformSkinAliasIfNeeded() {
+    std::string docs = host::documents_dir();
+    if (docs.empty()) return false;
+    std::function<std::string(const std::string&)> source = [=](const std::string& alias) -> std::string {
+        std::string marker = host::path_join(docs, alias) + ".source";
+        return host::read_text_file(marker);
+    };
+    // With no pad yet the skins stay the ones the last pad had
+    const int pad = MCLEPadIsPlayStation();
+    const bool playStation = pad < 0 ? source("platformskinHD.swf") == "skinHDOrbis.swf" : pad == 1;
+    bool changed = false;
+    struct AliasPair { std::string alias; std::vector<std::string> sources; };
+    AliasPair pairs[] = {
+        { "platformskinHD.swf", playStation
+              ? std::vector<std::string>{ "skinHDOrbis.swf", "skinHDWin.swf", "skinHDDurango.swf", "skinHDWiiU.swf" }
+              : std::vector<std::string>{ "skinHDWin.swf", "skinHDDurango.swf", "skinHDOrbis.swf", "skinHDWiiU.swf" } },
+        { "platformskin.swf", playStation
+              ? std::vector<std::string>{ "skinOrbis.swf", "skinWin.swf", "skinPS3.swf", "skinVita.swf" }
+              : std::vector<std::string>{ "skinWin.swf", "skinPS3.swf", "skinVita.swf" } },
+    };
+    for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); ++i) {
+        std::string aliasPath = host::path_join(docs, pairs[i].alias);
+        // Which skin the alias holds, kept next to it
+        std::string markerPath = aliasPath + ".source";
+        std::string current = host::read_text_file(markerPath);
+        for (const std::string& candidate : pairs[i].sources) {
+            std::string srcPath = host::path_join(docs, candidate);
+            if (!host::file_exists(srcPath)) continue;
+            // An alias from before the marker existed came from the first
+            // Windows skin
+            if (current.empty() && host::file_exists(aliasPath) && !host::contains(candidate, "Orbis")) {
+                host::write_text_file(markerPath, candidate);
+                break;
+            }
+            // The PS4 skin keeps only its buttons, the rest is the Windows64
+            // skin's (its title says PlayStation 4 Edition)
+            std::string winPath = host::contains(candidate, "Orbis")
+                ? host::path_join(docs, host::replace_all(candidate, "Orbis", "Win"))
+                : std::string();
+            if (!winPath.empty() && !host::file_exists(winPath)) winPath = std::string();
+            std::string mergedPath = aliasPath + ".win";
+            // Made again when a skin it's made from was replaced since
+            double aliasMade = host::file_modified(aliasPath);
+            bool stale = false;
+            for (const std::string& from : !winPath.empty() ? std::vector<std::string>{ srcPath, winPath } : std::vector<std::string>{ srcPath }) {
+                double changed = host::file_modified(from);
+                if (aliasMade && changed && changed > aliasMade) stale = true;
+            }
+            if (current == candidate && host::file_exists(aliasPath) &&
+                (winPath.empty() || host::file_exists(mergedPath)) && !stale) break;
+            host::remove_file(aliasPath);
+            host::remove_file(mergedPath);
+            bool made = false;
+            if (!winPath.empty()) {
+                std::vector<uint8_t> orbis = host::read_file(srcPath);
+                std::vector<uint8_t> win = host::read_file(winPath);
+                const unsigned char* o = static_cast<const unsigned char*>(orbis.data());
+                const unsigned char* w = static_cast<const unsigned char*>(win.data());
+                std::vector<unsigned char> merged;
+                if (orbis.size() && win.size() &&
+                    mcle_merge_platform_skin(std::vector<unsigned char>(o, o + orbis.size()),
+                                             std::vector<unsigned char>(w, w + win.size()), merged)) {
+                    made = host::write_file(aliasPath, merged.data(), merged.size());
+                    if (made) host::write_text_file(mergedPath, host::last_path_component(winPath));
+                }
+            }
+            if (!made) made = host::copy_file(srcPath, aliasPath);
+            if (made) {
+                host::write_text_file(markerPath, candidate);
+                host::log("[platformskin] aliased %s -> %s", candidate.c_str(), pairs[i].alias.c_str());
+                changed = true;
+            } else {
+                host::log("[platformskin] copy %s -> %s failed", candidate.c_str(), pairs[i].alias.c_str());
+            }
+            break;
+        }
+    }
+    g_platform_skin_orbis = source("platformskinHD.swf") == "skinHDOrbis.swf";
+    return changed;
+}
+
+// A pad connected or went. When the skins change with it, they load again
+// like UIController::ReloadSkin: the libraries, then the movies made with
+// the old ones that show the pad's buttons.
+void Host::platformPadChanged() {
+    if (!Host::installPlatformSkinAliasIfNeeded()) return;
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    MCLEReloadSkinLibraries(true);
+    if (scenerAttached) {
+        reloadTooltipsComponent();
+        reloadTutorialPopupComponent();
+    }
+    // ReloadAll for the scenes that draw the pad
+    if (!g_pending_dialog && (currentMenuSwf == "Controls1080.swf" ||
+                              currentMenuSwf == "HowToPlay1080.swf")) {
+        transitionToMenuNamed(std::string(currentMenuSwf));
+    }
+}
+
+// The tooltips component's movie up again on the new platform skin, its
+// glyphs are the skin's
+void Host::reloadTooltipsComponent() {
+    extern PlayerHandle* g_ruffle_player;
+    std::string docs = host::documents_dir();
+    std::string path = host::path_join(docs, "ToolTips1080.swf");
+    std::vector<uint8_t> data = host::read_file(path);
+    if (!data.size()) return;
+    std::string url = host::file_url(path);
+    ruffle_ios_remove_sibling_at_depth(g_ruffle_player, kTooltipsDepth);
+    int rc = ruffle_ios_add_sibling_swf_to_root(g_ruffle_player,
+        (const uint8_t*)data.data(), data.size(),
+        (const uint8_t*)url.c_str(), strlen(url.c_str()),
+        kTooltipsDepth, 1.0f, 1.0f, 0.0f, 0.0f);
+    host::log("[platformskin] tooltips movie reloaded -> %d", rc);
+    if (rc != 1) return;
+    // A few frames so its init builds the strip, as attachMenuScenery does
+    for (int i = 0; i < 10; ++i) {
+        ruffle_ios_player_tick_headless_preserve_xui(g_ruffle_player, 1.0f / 60.0f);
+    }
+    ruffle_ios_set_sibling_takes_input(g_ruffle_player, kTooltipsDepth, 0);
+    MCLETooltipsMovieReloaded();
+}
+
+// The tutorial popup's movie up again on the new skins, with what it showed
+void Host::reloadTutorialPopupComponent() {
+    extern PlayerHandle* g_ruffle_player;
+    std::string docs = host::documents_dir();
+    std::string path = host::path_join(docs, "TutorialPopup1080.swf");
+    std::vector<uint8_t> data = host::read_file(path);
+    if (!data.size()) return;
+    std::string url = host::file_url(path);
+    ruffle_ios_remove_sibling_at_depth(g_ruffle_player, kTutorialPopupDepth);
+    int rc = ruffle_ios_add_sibling_swf_to_root(g_ruffle_player,
+        (const uint8_t*)data.data(), data.size(),
+        (const uint8_t*)url.c_str(), strlen(url.c_str()),
+        kTutorialPopupDepth, 1.0f, 1.0f, 0.0f, 0.0f);
+    host::log("[skin] tutorial popup movie reloaded -> %d", rc);
+    if (rc != 1) return;
+    for (int i = 0; i < 10; ++i) {
+        ruffle_ios_player_tick_headless_preserve_xui(g_ruffle_player, 1.0f / 60.0f);
+    }
+    ruffle_ios_set_sibling_takes_input(g_ruffle_player, kTutorialPopupDepth, 0);
+    MCLETutorialPopupMovieReloaded();
+}
+
+// A component's movie up again on the new skin libraries, shown or hidden
+// as the one before it was. Its init runs in the frames the tooltips'
+// reload ticks after.
+static void MCLEReloadComponent(const char* swf, int depth, float sx, float sy, float tx, float ty) {
+    extern PlayerHandle* g_ruffle_player;
+    std::string path = host::path_join(host::documents_dir(), swf);
+    std::vector<uint8_t> data = host::read_file(path);
+    if (!data.size()) return;
+    std::string url = host::file_url(path);
+    int visible = ruffle_ios_xui_sibling_visible_at_depth(g_ruffle_player, depth);
+    ruffle_ios_remove_sibling_at_depth(g_ruffle_player, depth);
+    int rc = ruffle_ios_add_sibling_swf_to_root(g_ruffle_player,
+        (const uint8_t*)data.data(), data.size(),
+        (const uint8_t*)url.c_str(), strlen(url.c_str()),
+        depth, sx, sy, tx, ty);
+    host::log("[skin] %s reloaded -> %d", swf, rc);
+    if (rc != 1) return;
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, depth, visible);
+    ruffle_ios_set_sibling_takes_input(g_ruffle_player, depth, 0);
+}
+
+// UIController::ReloadSkin for a texture pack: the libraries, then
+// UILayer::ReloadAll reloading the components that stay up. The scenes
+// load with the new libraries as they come.
+void Host::reloadSkin() {
+    MCLEReloadSkinLibraries();
+    if (!scenerAttached) return;
+    // The panorama and the logo are the skin's own art, placed as
+    // attachMenuScenery places them
+    const host::Rect panoramaRect = MCLEScreenInStage(platform::view_size());
+    MCLEReloadComponent("Panorama1080.swf", -2,
+                        (float)(panoramaRect.size.width / 1920.0), (float)(panoramaRect.size.height / 1080.0),
+                        panoramaRect.origin.x, panoramaRect.origin.y);
+    // UIComponent_Panorama starts on its day half
+    s_showingDay = true;
+    MCLEReloadComponent("ComponentLogo1080.swf", kLogoDepth, 1.0f, 1.0f, 0.0f, 0.0f);
+    reloadTooltipsComponent();
+    reloadTutorialPopupComponent();
+}
+
+void Host::viewDidLoad() {
+    // Print every file the app's sandbox Documents folder actually
+    // contains. This is the only ground truth for "did MainMenu1080.swf
+    // make it into the right container" - independent of how 3uTools /
+    // AltStore / Sideloadly chose to copy it in.
+    {
+        std::string docs = host::documents_dir();
+        host::log("[MCLE/docs] sandbox Documents = %s", docs.c_str());
+        std::vector<std::string> entries = host::list_directory(docs);
+        host::log("[MCLE/docs] %zu entries", entries.size());
+        for (const std::string& e : entries) {
+            std::string full = host::path_join(docs, e);
+            bool isDir = host::is_directory(full);
+            struct stat attrs;
+            unsigned long long sz = isDir || stat(full.c_str(), &attrs) != 0 ? 0 : (unsigned long long)attrs.st_size;
+            host::log("[MCLE/docs]   %s%s (%llu bytes)",
+                      e.c_str(), isDir ? "/" : "", sz);
+        }
+    }
+
+    // Minecraft::main's part before the menus: the statics, and the default
+    // game rules with the tutorial's level generator
+    mcle_minecraft_main();
+
+    // Lay down the platform-skin alias before any SWF parses
+    // imports. Without this, ToolTips1080.swf (and any other
+    // 1080p scene that imports platformskinHD.swf) 404s on the
+    // imports for controller-button glyphs and the icons stay
+    // blank.
+    Host::installPlatformSkinAliasIfNeeded();
+
+    // Cache splashes.txt at launch. File ships alongside the SWFs
+    // in Documents. Each transition into MainMenu re-rolls via
+    // pickSplash.
+    std::string docsDir = host::documents_dir();
+    std::string splashesPath = host::path_join(docsDir, "splashes.txt");
+    std::string contents = host::read_text_file(splashesPath);
+    if (!contents.empty()) {
+        std::vector<std::string> lines;
+        for (const std::string& line : host::split(host::replace_all(contents, "\r", "\n"), "\n")) {
+            if (!line.empty()) lines.push_back(line);
+        }
+        splashes = lines;
+    }
+    pickSplash();
+
+    // Splash label: yellow, rotated -17 degrees, positioned next to
+    // the title logo. Authored XUI position is (612, 126) on the
+    // 1920x1080 stage; the tick method converts it to view points
+    // so the stage fit math stays dynamic.
+    platform::splash_set_text(splashText);
+    host::log("[MinecraftVC] splash text=%s", splashText.c_str());
+}
+
+// Pick a fresh splash string. Mirrors UIScene_MainMenu.cpp
+// lines 195-225 on console: random pool starts at eSplashRandomStart
+// + 1 (index 5, skipping the Happy-Birthday-ex / Notch / Xmas /
+// NewYear overrides plus the "Hobo humping" line legal removed).
+// Date overrides replace the roll on specific days.
+void Host::pickSplash() {
+    std::vector<std::string> lines = splashes;
+    std::string picked;
+    if (lines.size()) {
+        time_t date = time(nullptr);
+        struct tm dc;
+        localtime_r(&date, &dc);
+        long m = dc.tm_mon + 1, d = dc.tm_mday;
+        if (m == 11 && d == 9 && lines.size() > 0) {
+            picked = lines[0];                 // Happy birthday, ez!
+        } else if (m == 6 && d == 1 && lines.size() > 1) {
+            picked = lines[1];                 // Happy birthday, Notch!
+        } else if (m == 12 && d == 24 && lines.size() > 2) {
+            picked = lines[2];                 // Merry X-mas!
+        } else if (m == 1 && d == 1 && lines.size() > 3) {
+            picked = lines[3];                 // Happy New Year!
+        } else if (lines.size() > 5) {
+            // Random pool excludes indexes 0..4.
+            size_t poolCount = lines.size() - 5;
+            size_t idx = 5 + arc4random_uniform((uint32_t)poolCount);
+            picked = lines[idx];
+        } else {
+            picked = lines[0];
+        }
+    }
+    if (picked.empty()) picked = "Now Java-free!";
+    splashText = picked;
+    platform::splash_set_text(picked);
+    host::log("[MinecraftVC] splash -> %s", picked.c_str());
+}
+
+void Host::viewWillAppear() {
+    host::Size sz = platform::view_size();
+    double scale = platform::view_scale();
+    // The view's size is the pixels over the scale, so back to whole pixels
+    int pw = (int)std::lround(sz.width  * scale);
+    int ph = (int)std::lround(sz.height * scale);
+
+    // Try to stand up a Ruffle wgpu player that owns this layer.
+    // If it succeeds, every frame is driven by Ruffle. If it fails, it
+    // falls back to the old Metal triangle path.
+    extern PlayerHandle* g_ruffle_player;
+    extern int g_ruffle_surface_probe;
+
+    g_ruffle_surface_probe =
+        ruffle_ios_surface_probe(platform::swf_layer());
+
+    std::string swfPath = resolveSwfPath();
+    if (!swfPath.empty() && g_ruffle_surface_probe == 1) {
+        std::vector<uint8_t> data = host::read_file(swfPath);
+        if (data.size()) {
+            std::string docsPath = host::documents_dir();
+
+            // Stage the LCE menu font BEFORE create_wgpu so Ruffle registers
+            // it before preload. Registering after returns caches misses in
+            // text-field glyph tables and labels render as empty boxes.
+            // LCE ships the file as "Mojang Font_7.ttf"; also try the name
+            // the SWF references ("Mojangles7.ttf") and a few common
+            // subfolders for users who organise their Files app drop.
+            std::vector<std::string> fontNames = {
+                "Mojangles7.ttf",
+                "Mojang Font_7.ttf",
+            };
+            std::vector<std::string> fontSubdirs = {
+                "",
+                "fonts",
+                "font",
+                "Fonts",
+                "Font",
+            };
+            std::string foundAt;
+            std::vector<uint8_t> fontData;
+            for (const std::string& subdir : fontSubdirs) {
+                std::string dir = !subdir.empty()
+                    ? host::path_join(docsPath, subdir)
+                    : docsPath;
+                for (const std::string& name : fontNames) {
+                    std::string p = host::path_join(dir, name);
+                    if (host::file_exists(p)) {
+                        fontData = host::read_file(p);
+                        if (fontData.size()) { foundAt = p; break; }
+                    }
+                }
+                if (fontData.size()) break;
+            }
+            if (fontData.size()) {
+                const char* nameCStr = "Mojangles7";
+                int rc = ruffle_ios_stage_device_font(
+                    (const uint8_t*)nameCStr, strlen(nameCStr),
+                    (const uint8_t*)fontData.data(), fontData.size(),
+                    0, 0);
+                host::log("[MinecraftVC] staged device font from %s rc=%d",
+                          foundAt.c_str(), rc);
+                if (rc == 1) {
+                    fontStatus = host::format(
+                        "Mojangles7 staged (%zuk) from %s",
+                        fontData.size() / 1024,
+                        host::replace_all(foundAt, docsPath, "Docs").c_str());
+                } else {
+                    fontStatus = host::format(
+                        "Mojangles7 stage rc=%d", rc);
+                }
+                // UIController::SetupFont registers Mojangles11 next to
+                // Mojangles7 (the End poem and the small labels use it).
+                // Without its own file it goes to the 7 one, the way the
+                // TTF fonts take both names with IggyFontSetIndirectUTF8.
+                std::vector<uint8_t> font11Data;
+                for (const std::string& subdir : fontSubdirs) {
+                    std::string dir = !subdir.empty()
+                        ? host::path_join(docsPath, subdir)
+                        : docsPath;
+                    for (const std::string& name : std::vector<std::string>{"Mojangles11.ttf", "Mojang Font_11.ttf"}) {
+                        std::string p = host::path_join(dir, name);
+                        if (host::file_exists(p)) font11Data = host::read_file(p);
+                        if (font11Data.size()) break;
+                    }
+                    if (font11Data.size()) break;
+                }
+                if (!font11Data.size()) font11Data = fontData;
+                const char* name11 = "Mojangles11";
+                rc = ruffle_ios_stage_device_font(
+                    (const uint8_t*)name11, strlen(name11),
+                    (const uint8_t*)font11Data.data(), font11Data.size(),
+                    0, 0);
+                host::log("[MinecraftVC] staged Mojangles11 (%zuk) rc=%d",
+                          font11Data.size() / 1024, rc);
+            } else {
+                // List what's actually in Documents so the user can see
+                // whether the file landed where it should.
+                std::vector<std::string> entries = host::list_directory(docsPath);
+                std::string summary;
+                for (size_t i = 0; i < std::min((size_t)6, entries.size()); ++i) {
+                    if (i) summary += ",";
+                    summary += entries[i];
+                }
+                fontStatus = host::format(
+                    "Mojangles7 missing; Docs has: %s", summary.c_str());
+            }
+
+            // Now that fonts are staged, build the player. create_wgpu will
+            // apply the staged fonts between PlayerBuilder::build() and the
+            // preload loop, so text fields find the device font on their
+            // first glyph layout.
+            g_ruffle_player = ruffle_ios_player_create_wgpu(
+                platform::swf_layer(),
+                pw, ph,
+                (const uint8_t*)data.data(), data.size(),
+                docsPath.c_str());
+            currentMenuSwf = host::last_path_component(swfPath);
+            g_current_scene_name = currentMenuSwf;
+            menuStack.clear();
+            bool fromDocs = host::contains(swfPath, "/Documents/");
+            loadedSwfName = host::format("%s (%s)",
+                host::last_path_component(swfPath).c_str(),
+                fromDocs ? "Documents" : "bundled");
+            host::log("[MinecraftVC] ruffle wgpu player = %p  (loaded %s)",
+                      (void*)g_ruffle_player, loadedSwfName.c_str());
+            if (g_ruffle_player &&
+                !ruffle_ios_player_attach_overlay_layer(g_ruffle_player, platform::swf_top_layer())) {
+                host::log("[MinecraftVC] no layer over the custom draws");
+            }
+
+            // One-shot discovery dump. LCE SWFs are driven by the host calling
+            // AS3 methods on named button instances (IggyPlayerCallMethodRS
+            // on console). The instance names aren't known ahead of time, so
+            // enumerate the root's direct children and write them into the
+            // persistent log, where they can be read off-device.
+            if (g_ruffle_player) {
+                static uint8_t childBuf[8192];
+                size_t n = ruffle_ios_enumerate_root_children(
+                    g_ruffle_player, childBuf, sizeof(childBuf));
+                std::string childList = n
+                    ? std::string((const char*)childBuf, n)
+                    : std::string("<empty>");
+                host::log("[MinecraftVC] root children:\n%s", childList.c_str());
+            }
+            if (g_ruffle_player && currentMenuSwf == "Intro1080.swf") {
+                initIntro();
+            } else if (g_ruffle_player) {
+                // Populate the main menu buttons + attach panorama via
+                // the shared initMainMenuButtons path (also used on
+                // transition back from submenus).
+                initMainMenuButtons();
+
+                // The transitionToMenuNamed dispatcher seeds tooltips
+                // on every navigation, but the very first scene
+                // boots through ruffle_ios_player_create_wgpu without
+                // going through that path. Replicate the per-scene
+                // tooltip seed here so MainMenu's bottom strip shows
+                // on the launch screen rather than waiting for the
+                // first nav. MainMenu uses A=Select only per
+                // UIScene_MainMenu::updateTooltips
+                // (UIScene_MainMenu.cpp:124-142).
+                seedTooltipsForScene_hidden(currentMenuSwf, false);
+            }
+        }
+    }
+    if (loadedSwfName.empty()) loadedSwfName = "<none>";
+
+    // The world renders into the world layer. Ruffle has the overlay
+    // layer above it, so both can draw every frame.
+    mcle_render_init(platform::world_layer(), pw, ph);
+    mcle_metal_attach_ui_layer(platform::custom_draw_layer(), pw, ph);
+    // Minecraft::init once there's a renderer: the options, textures and
+    // fonts the menus can draw the game's models with
+    mcle_minecraft_init();
+
+    // Load persisted game settings (or seed console defaults on
+    // first run). Mirrors CMinecraftApp::InitGameSettings path:
+    // load settings.dat, fall through to defaults otherwise.
+    mcle_settings_load();
+    // Suppress Ruffle's auto-drawn yellow focus rectangle.
+    // LCE's FJ_Slider and FJ_CheckBox include their own authored
+    // outline MovieClips (FJ_Slider_Outline etc) so the default
+    // Flash Player focus indicator draws on top of the authored
+    // one, producing a double yellow frame.
+    ruffle_ios_suppress_auto_focus_highlight(g_ruffle_player, 1);
+    // Register the AS3-side event bridge. ExternalInterface calls
+    // to handleCheckboxToggled / handleSliderMove route through
+    // this callback, which maps (current scene, control id) to an
+    // MCLE_SETTING_* index and writes the value through to
+    // settings.dat. Mirrors the per-scene handleCheckboxToggled /
+    // handleSliderMove switch statements on console
+    // (e.g. UIScene_SettingsOptionsMenu.cpp:379).
+    extern void mcle_ios_settings_event_bridge(const char*, double, double);
+    ruffle_ios_set_settings_event_callback(&mcle_ios_settings_event_bridge);
+    // How the scenes' UIControl_Base::getLabel reads the movie
+    mcle_container_set_label_reader(MCLELabelAt);
+
+    g_active_vc = this;
+}
+
+void Host::viewDidDisappear() {
+    mcle_render_shutdown();
+}
+
+void Host::applyMenuButtonConfig(const std::vector<MenuButton>& config) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    menuButtonConfig = config;
+    for (const MenuButton& entry : config) {
+        const char* name = entry.name.c_str();
+        const char* label = entry.label.c_str();
+        double id = entry.id;
+        ruffle_ios_call_init_on_named_child(
+            g_ruffle_player,
+            (const uint8_t*)name,  strlen(name),
+            (const uint8_t*)"Init", 4,
+            (const uint8_t*)label, strlen(label),
+            id);
+        ruffle_ios_call_init_on_named_child(
+            g_ruffle_player,
+            (const uint8_t*)name,      strlen(name),
+            (const uint8_t*)"SetLabel", 8,
+            (const uint8_t*)label,     strlen(label),
+            0.0);
+    }
+    if (config.size() > 0) {
+        const char* firstName = config[0].name.c_str();
+        ruffle_ios_call_init_on_named_child(
+            g_ruffle_player,
+            (const uint8_t*)firstName, strlen(firstName),
+            (const uint8_t*)"ChangeState", 11,
+            (const uint8_t*)"", 0,
+            0.0);
+    }
+    menuFocusIndex = 0;
+
+    // Hide 4J's loading placeholder on every scene. Iggy on console
+    // hides it automatically when the scene finishes streaming; this
+    // port has no scene-ready hook wired up, so it's hidden here
+    // once buttons are wired.
+    const char* splashName = "iggy_Splash";
+    ruffle_ios_set_root_child_visible(
+        g_ruffle_player,
+        (const uint8_t*)splashName, strlen(splashName),
+        0);
+}
+
+void Host::attachMenuScenery() {
+    // Mirrors UIScene_MainMenu.cpp:29-30 + UIGroup.cpp:28 on console
+    // which composite Panorama + Logo + Tooltips as sibling movies
+    // attached to the parent UILayer (not the scene). The layer
+    // outlives scene transitions, so the panorama timeline keeps
+    // playing smoothly as menus swap.
+    //
+    // The Ruffle side attaches these to the Stage at non-zero
+    // depths (Stage.replace_root_movie only touches depth 0, so
+    // Stage-level children at other depths survive scene swaps).
+    // So they're attached ONCE at startup, NOT on every
+    // scene init - otherwise each transition would create duplicate
+    // siblings and reset the panorama's playhead to frame 1.
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    if (scenerAttached) return;
+    scenerAttached = true;
+    {
+        // Console Iggy layers each scene as its own movie. Panorama
+        // is Panorama1080.swf, a sibling of MainMenu1080.swf that the
+        // host composites beneath it. Its picture and the logo's come
+        // out of the skin (platformskinHD.swf), the selected pack's
+        // when it has one.
+        std::string docs = host::documents_dir();
+
+        // Load the same sibling movies UIScene_MainMenu composites on
+        // console (UIScene_MainMenu.cpp:29-30 adds eUIComponent_Panorama
+        // + eUIComponent_Logo; UIGroup.cpp:28 adds Tooltips via the
+        // tooltips layer). Depths: panorama beneath everything (0),
+        // logo and tooltips above MainMenu's button depths (3..9) so
+        // they overlay.
+        // Each sibling's (depth, scaleX, scaleY). Console renders
+        // each Iggy movie at screen resolution via
+        // IggyPlayerSetDisplaySize so the authored 1920x1080
+        // content fills the screen. With one shared stage, siblings
+        // render at their authored proportions within the 1920x1080
+        // stage, so content authored at less than the stage size
+        // (panorama's 720-tall bitmap, logo's 571x138 PNG) looks
+        // small on iPhone. Apply per-sibling scale to fill out the
+        // visible area: the layout follows the source, but the
+        // presentation is sized for a phone.
+        //
+        // Logo: 1.5x uniform so the 571x138 MenuTitle PNG is more
+        // visible on a phone screen.
+        //
+        // Tooltips: keep 1.0x until the individual button
+        // panel rendering (FJ_Tooltips undefined-class issue) is fixed.
+        // Logo: 1.0x with the 1080.png MenuTitle (857x207) dropped into
+        // Documents. The SWF is authored to center that asset on the
+        // 1920x1080 stage, so no scale and no translate is needed.
+        // Using the 720.png (571x138) asset instead looks small AND
+        // scaling it 1.5x shifts the content because scale-from-origin
+        // multiplies every authored x by sx. Stick with the native
+        // size and let the SWF do its own layout.
+        //
+        // Tooltips: keep 1.0x until FJ_Tooltips is fleshed out.
+        struct SiblingCfg { std::string swf; int depth; float sx; float sy; float tx; float ty; };
+        const host::Rect panoramaRect = MCLEScreenInStage(platform::view_size());
+        std::vector<SiblingCfg> siblings = {
+            // Depth stack documented next to the kFooDepth
+            // constants near the top of this file. Order is
+            // back-to-front: Panorama, scene root (added later by
+            // replace_swf), Logo, dim, dialog (only when up),
+            // Tooltips.
+            // UIComponent_Panorama::render gives the movie the whole
+            // screen (IggyPlayerSetDisplaySize with the screen's size), so
+            // its stage is stretched over a screen of another shape
+            { "Panorama1080.swf",     -2,
+              (float)(panoramaRect.size.width / 1920.0), (float)(panoramaRect.size.height / 1080.0),
+              panoramaRect.origin.x, panoramaRect.origin.y },
+            { "ComponentLogo1080.swf", kLogoDepth,           1.0f, 1.0f, 0.0f,    0.0f },
+            // MenuBackground is the dim backdrop console adds via
+            // UIComponent_MenuBackground while a MessageBox dialog
+            // is up (UIScene_MessageBox.cpp:49 addComponent).
+            // Authored 1080-wide; without stretching to match the
+            // Panorama scale it only covered the centre band of
+            // the screen. Same 1.5x and pre-shift Panorama uses so
+            // it fills iPhone aspect ratios end-to-end.
+            { "MenuBackground1080.swf", kMenuBackgroundDepth, 1.5f, 1.5f, -208.6f, 0.0f },
+            { "MenuBackground1080.swf", kDimDepth,            1.5f, 1.5f, -208.6f, 0.0f },
+            { "ToolTips1080.swf",      kTooltipsDepth,       1.0f, 1.0f, 0.0f,    0.0f },
+            // UIGroup's tutorial popup, hidden until the tutorial shows it
+            { "TutorialPopup1080.swf", kTutorialPopupDepth, 1.0f, 1.0f, 0.0f,    0.0f },
+            // The fullscreen group's PressStartToPlay, with the autosave countdown
+            { "PressStartToPlay1080.swf", kPressStartToPlayDepth, 1.0f, 1.0f, 0.0f, 0.0f },
+        };
+        for (const SiblingCfg& entry : siblings) {
+            std::string swfName = entry.swf;
+            int depth = entry.depth;
+            float sx = entry.sx;
+            float sy = entry.sy;
+            float tx = entry.tx;
+            float ty = entry.ty;
+            std::string path = host::path_join(docs, swfName);
+            std::vector<uint8_t> data = host::read_file(path);
+            if (!data.size()) {
+                host::log("[MinecraftVC] %s missing at %s", swfName.c_str(), path.c_str());
+                continue;
+            }
+            std::string url = host::file_url(path);
+            int rc = ruffle_ios_add_sibling_swf_to_root(
+                g_ruffle_player,
+                (const uint8_t*)data.data(), data.size(),
+                (const uint8_t*)url.c_str(), strlen(url.c_str()),
+                depth, sx, sy, tx, ty);
+            host::log("[MinecraftVC] %s (depth %d, scale %.1fx%.1f, t=%.0f,%.0f) -> %d",
+                      swfName.c_str(), depth, sx, sy, tx, ty, rc);
+        }
+
+        // Hide the MenuBackground sibling at startup. Only shown
+        // while a MessageBox dialog is up so it doesn't dim the
+        // regular menu tree.
+        ruffle_ios_set_xui_sibling_visible_at_depth(
+            g_ruffle_player, kDimDepth, 0);
+        ruffle_ios_set_xui_sibling_visible_at_depth(
+            g_ruffle_player, kMenuBackgroundDepth, 0);
+        // UILayer adds the tutorial popup hidden
+        ruffle_ios_set_xui_sibling_visible_at_depth(
+            g_ruffle_player, kTutorialPopupDepth, 0);
+        // UILayer::handleInput: components can't take input or focus.
+        // The tooltips only get the presses AnimateKeyPress sends them.
+        const int components[] = { -2, kLogoDepth, kMenuBackgroundDepth, kDimDepth,
+                                   kTooltipsDepth, kTutorialPopupDepth, kPressStartToPlayDepth };
+        for (int depth : components) ruffle_ios_set_sibling_takes_input(g_ruffle_player, depth, 0);
+
+        // Tick the player a few frames so each sibling SWF's
+        // ADDED_TO_STAGE event fires and its FJ_Document.init
+        // runs (m_aToolTips array gets built etc.). Without this,
+        // the very first seedTooltipsForScene call after
+        // attachMenuScenery hits a Tooltips sibling whose init
+        // hasn't run yet, SetToolTip silently no-ops on the
+        // half-constructed clip, and the bottom-strip stays empty
+        // until the next scene transition lets init catch up.
+        // Subsequent scene transitions are fine because the
+        // sibling's already constructed by then.
+        for (int i = 0; i < 10; ++i) {
+            ruffle_ios_player_tick_headless(g_ruffle_player, 1.0f / 60.0f);
+        }
+
+        // UIComponent_TutorialPopup's constructor, now its movie is up
+        mcle_tutorial_popup_movie_ready();
+        MCLETutorialPopupApplyOps();
+        MCLEPressStartToPlayInit();
+    }
+}
+
+// Configure the tooltips strip at the bottom of the screen for
+// the current scene. Drives ToolTips1080.swf (attached as a
+// stage sibling at kTooltipsDepth) via its public AS3 API:
+//   SetToolTip(buttonId, label, show)  per ToolTips.as:144
+//   UpdateLayout()                     per ToolTips.as:150
+// Button ids match the TOOLTIP_BUTTON_* constants in ToolTips.as:
+//   0 = A, 1 = B, 2 = X, 3 = Y, 4 = LT, 5 = RT, 6 = LB, 7 = RB,
+//   8 = LS, 9 = RS, 10 = SELECT.
+// Console seeds these per-scene via UIScene::updateTooltips,
+// which most scenes implement as
+// ui.SetTooltips(iPad, IDS_TOOLTIPS_SELECT, IDS_TOOLTIPS_BACK)
+// and route through UIController -> UIComponent_Tooltips ->
+// SetToolTip on each visible button.
+//
+// `hidden` is true for scenes where the tooltips strip would
+// overlap a dialog or full-screen UI (e.g. MessageBox).
+// Per-scene logo visibility. Mirrors which console UIScenes pass
+// false to UILayer::showComponent(eUIComponent_Logo) in their
+// updateComponents() override (SkinSelectMenu.cpp:143,
+// LeaderboardsMenu.cpp:150, etc.). All other scenes leave logo on.
+// Also called by finishDialogWithResult: after a dialog dismisses
+// to put the logo back where the underlying scene wants it.
+void Host::applyLogoVisibilityForScene(const std::string& swfName) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    // UIScene_Keyboard has no updateComponents, the logo stays as the scene
+    // under it had it
+    if (swfName == "Keyboard1080.swf") return;
+    std::set<std::string> logoOff = {
+        "SkinSelectMenu1080.swf",
+        "LeaderboardMenu1080.swf",
+        "LeaderboardsMenu1080.swf",
+        "CreateWorldMenu1080.swf",
+        "LaunchMoreOptionsMenu1080.swf",
+        // Neither has an updateComponents, and in the game nothing has
+        // the logo up for them to leave on
+        "DeathMenu1080.swf",
+        "EndPoem1080.swf",
+    };
+    int visible = logoOff.count(swfName) ? 0 : 1;
+    ruffle_ios_set_xui_sibling_visible_at_depth(
+        g_ruffle_player, kLogoDepth, visible);
+}
+
+void Host::seedTooltipsForScene_hidden(const std::string& swfName, bool hidden) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    // UIComponent_Tooltips::updateSafeZone, fullscreen
+    const char* setSafe = "SetSafeZone";
+    double safe[4] = { kSafeZoneTop, kSafeZoneBottom, kSafeZoneLeft, kSafeZoneRight }; // top, bottom, left, right
+    ruffle_ios_call_method_on_sibling_root(g_ruffle_player, kTooltipsDepth,
+        (const uint8_t*)setSafe, strlen(setSafe),
+        safe, 4);
+    // UIComponent_Tooltips::tick's opacity for this scene, 15% at least
+    // with a menu up
+    MCLETooltipsApplyOpacity(swfName != "HUD1080.swf", 0, true);
+
+    // In game Minecraft::tick sets them, see MCLEGameTooltipsPump
+    if (swfName == "HUD1080.swf") return;
+
+    // Each scene's UIScene::updateTooltips. Most are
+    // SetTooltips(pad, IDS_TOOLTIPS_SELECT, IDS_TOOLTIPS_BACK).
+    int ids[11] = { IDS_TOOLTIPS_SELECT, IDS_TOOLTIPS_BACK, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    if (swfName == "MainMenu1080.swf") {
+        // UIScene_MainMenu: Select only, there's nothing to back out to
+        ids[1] = -1;
+    } else if (swfName == "SaveMessage1080.swf") {
+        // UIScene_SaveMessage::updateTooltips: Select only
+        ids[1] = -1;
+    } else if (swfName == "MessageBox1080.swf") {
+        // UIScene_MessageBox: the dialog cancels
+        ids[1] = IDS_TOOLTIPS_CANCEL;
+    } else if (swfName == "DeathMenu1080.swf") {
+        // UIScene_DeathMenu: Select only, B does nothing there
+        ids[1] = -1;
+    } else if (swfName == "FullscreenProgress1080.swf") {
+        // UIScene_FullscreenProgress::updateTooltips: no select until the
+        // thread is done, and none of these have a cancelText
+        ids[0] = -1;
+        ids[1] = -1;
+    } else if (swfName == "PauseMenu1080.swf") {
+        // UIScene_PauseMenu::updateTooltips: the primary host of a full
+        // game with saving on gets Change Storage Device on X (which
+        // SetTooltips takes off again), sharing is never allowed on
+        // Windows64
+        ids[2] = IDS_TOOLTIPS_CHANGEDEVICE;
+    } else if (swfName == "LeaderboardMenu1080.swf") {
+        // UIScene_LeaderboardsMenu::updateTooltips with no entries
+        ids[0] = -1;
+        ids[2] = IDS_TOOLTIPS_CHANGE_FILTER;
+    } else if (swfName == "Credits1080.swf") {
+        // UIScene_Credits: Back only
+        ids[0] = -1;
+    } else if (swfName == "EndPoem1080.swf") {
+        // UIScene_EndPoem::updateTooltips
+        ids[0] = -1;
+        ids[1] = g_endpoem_ignore_input ? -1 : IDS_TOOLTIPS_CONTINUE;
+    } else if (swfName == "HowToPlay1080.swf") {
+        // UIScene_HowToPlay::StartPage set them for its page
+        return;
+    } else if (swfName == "SkinSelectMenu1080.swf") {
+        // UIScene_SkinSelectMenu::updateTooltips set them
+        return;
+    } else if (swfName == "LaunchMoreOptionsMenu1080.swf") {
+        MCLEMoreOptionsTooltips();
+        return;
+    } else if (swfName == "LoadOrJoinMenu1080.swf") {
+        MCLELoadOrJoinTooltips();
+        return;
+    }
+    MCLESetTooltips(ids);
+}
+
+void Host::initMainMenuButtons() {
+    std::vector<MenuButton> cfg = {
+        // UIScene_MainMenu constructor, the full version's
+        // IDS_DOWNLOADABLECONTENT
+        { "Button1", MCLEStr(IDS_PLAY_GAME),           0 },
+        { "Button2", MCLEStr(IDS_LEADERBOARDS),        1 },
+        { "Button3", MCLEStr(IDS_ACHIEVEMENTS),        2 },
+        { "Button4", MCLEStr(IDS_HELP_AND_OPTIONS),    3 },
+        { "Button5", MCLEStr(IDS_DOWNLOADABLECONTENT), 4 },
+        { "Button6", MCLEStr(IDS_EXIT_GAME),           5 },
+    };
+    attachMenuScenery();
+    applyMenuButtonConfig(cfg);
+    // UIScene_MainMenu::handleGainFocus
+    MCLESetPathVisible("Timer", false);
+}
+
+// The white backdrop behind the intro is up (introBackdrop)
+static bool g_intro_backdrop_shown = false;
+
+// UIScene_Intro constructor. No panorama, logo or tooltips with it, the
+// movie plays the logos for the platform and calls handleAnimationEnd.
+void Host::initIntro() {
+    g_intro_ignore_navigate = false;
+    menuButtonConfig.clear();
+    platform::splash_set_hidden(true);
+    if (!g_intro_backdrop_shown) {
+        g_intro_backdrop_shown = true;
+        platform::intro_backdrop_set_shown(true);
+    }
+    // Windows64's platformIdx 0, no ESRB skip, not China
+    MCLECallPath("", "SetIntroPlatform", { 0, false, false });
+}
+
+// UIScene_Intro::handleInput (A) and handleAnimationEnd: once, on to the
+// save message
+void Host::introNavigate() {
+    if (g_intro_ignore_navigate || currentMenuSwf != "Intro1080.swf") return;
+    g_intro_ignore_navigate = true;
+    std::string docs = host::documents_dir();
+    bool haveSaveMessage = host::file_exists(
+        host::path_join(docs, "SaveMessage1080.swf"));
+    if (haveSaveMessage) transitionToMenuNamed("SaveMessage1080.swf");
+    else navigateToHomeMenu();
+}
+
+// UIScene_SaveMessage constructor
+void Host::initSaveMessage() {
+    // addComponent eUIComponent_Panorama and eUIComponent_Logo
+    attachMenuScenery();
+    applyMenuButtonConfig({
+        { "Confirm", MCLEStr(IDS_CONFIRM_OK), 0 },
+    });
+    MCLECallPath("Description", "Init", { MCLEStr(IDS_SAVE_ICON_MESSAGE) });
+    // Russian needs to resize the box
+    MCLECallPath("", "AutoResize", {});
+    // If we have a signed in user connected, let's get the DLC now
+    mcle_dlc_install_if_needed(0);
+}
+
+// UIController::NavigateToHomeMenu: the menus go back on the default
+// texture pack, then the main menu with nothing to go back to
+void Host::navigateToHomeMenu() {
+    menuStack.clear();
+    mcle_texture_packs_navigate_to_home_menu();
+    mcle_handle_xui_actions();
+    if (mcle_ui_take_skin_reload()) reloadSkin();
+    transitionToMenuNamed("MainMenu1080.swf");
+}
+
+void Host::initHelpAndOptionsButtons() {
+    // Mirrors UIScene_HelpAndOptionsMenu constructor on console: only the
+    // five universally-visible buttons are configured (Reinstall and
+    // Debug are runtime-removed in the console release build). BUTTON_HAO_*
+    // ids match the enum on console.
+    std::vector<MenuButton> cfg = {
+        { "Button1", MCLEStr(IDS_CHANGE_SKIN),  0 },
+        { "Button2", MCLEStr(IDS_HOW_TO_PLAY),  1 },
+        { "Button3", MCLEStr(IDS_CONTROLS),     2 },
+        { "Button4", MCLEStr(IDS_SETTINGS),     3 },
+        { "Button5", MCLEStr(IDS_CREDITS),      4 },
+    };
+    attachMenuScenery();
+    applyMenuButtonConfig(cfg);
+    // Hide the two unused slots (Button6=Reinstall Content,
+    // Button7=Debug Settings). Console removeControl()s them in
+    // UIScene_HelpAndOptionsMenu's ctor; here FJ_Button::HideUntilInit
+    // sets .visible=false and marks them non-initialised, same
+    // practical effect of keeping them off the display.
+    extern PlayerHandle* g_ruffle_player;
+    for (const std::string& hiddenName : std::vector<std::string>{"Button6", "Button7"}) {
+        const char* n = hiddenName.c_str();
+        ruffle_ios_call_init_on_named_child(
+            g_ruffle_player,
+            (const uint8_t*)n, strlen(n),
+            (const uint8_t*)"HideUntilInit", 13,
+            (const uint8_t*)"", 0,
+            0.0);
+    }
+}
+
+// Mark menuFocusIndex as SELECTED on the buttons of the
+// current menu, everything else UNSELECTED. Used after
+// navigateBack so the focused button is the one the user left on,
+// not always Button1. State codes 1=SELECTED, 2=UNSELECTED match
+// the console FJ_Button states the input handler drives.
+void Host::refreshFocusState() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player || !menuButtonConfig.size()) return;
+    int focus = menuFocusIndex;
+    for (size_t i = 0; i < menuButtonConfig.size(); ++i) {
+        const char* name = menuButtonConfig[i].name.c_str();
+        int state = ((int)i == focus) ? 1 : 2;
+        ruffle_ios_call_init_on_named_child(
+            g_ruffle_player,
+            (const uint8_t*)name, strlen(name),
+            (const uint8_t*)"ChangeState", 11,
+            (const uint8_t*)"", 0,
+            (double)state);
+    }
+}
+
+// First-pass port of UIScene_SettingsOptionsMenu's init block
+// (Common/UI/UIScene_SettingsOptionsMenu.cpp:25). Control names and
+// ids match the UI_MAP_ELEMENT table on console (ViewBob,
+// ShowHints, ShowTooltips, InGameGamertags, ShowMashUpWorlds,
+// Autosave, Difficulty, DifficultyText, Languages).
+//
+// This only drives SetLabel + Init so the scene shows readable
+// text instead of FJ_Label placeholders. The full port needs
+// two more pieces that don't exist yet:
+//   - iOS-side game settings storage so checkbox/slider initial
+//     values and write-through can actually land somewhere.
+//   - Event flow from Ruffle back up when a checkbox toggles or a
+//     slider moves, so the backing value can be updated.
+// Both are follow-ups; this at least makes the scene readable and
+// navigable with B back to Settings.
+void Host::initSettingsOptionsMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    // 5 checkboxes: Init(label, id, checked). Values read from the
+    // persistent store (see MCLE_iOS_Settings). Mirrors
+    // UIControl_CheckBox::init (3 args).
+    struct Cb { const char* name; std::string label; int id; bool checked; };
+    // Labels match the IDS_ constants in stringsGeneric.xml:
+    //   IDS_VIEW_BOBBING             "View Bobbing"
+    //   IDS_HINTS                    "Hints"
+    //   IDS_IN_GAME_TOOLTIPS         "In-Game Tooltips"
+    //   IDS_IN_GAME_GAMERTAGS        "In-Game Gamertags"
+    //   IDS_UNHIDE_MASHUP_WORLDS     "Show all Mash-up Worlds"
+    Cb checkboxes[] = {
+        {"ViewBob",         MCLEStr(IDS_VIEW_BOBBING),      0, (bool)mcle_settings_get(MCLE_SETTING_ViewBob)},
+        {"ShowHints",       MCLEStr(IDS_HINTS),             1, (bool)mcle_settings_get(MCLE_SETTING_Hints)},
+        {"ShowTooltips",    MCLEStr(IDS_IN_GAME_TOOLTIPS),  2, (bool)mcle_settings_get(MCLE_SETTING_Tooltips)},
+        {"InGameGamertags", MCLEStr(IDS_IN_GAME_GAMERTAGS), 3, (bool)mcle_settings_get(MCLE_SETTING_GamertagsVisible)},
+    };
+    MCLESettingsCheckboxesClear();
+    for (auto& c : checkboxes) {
+        g_settings_checkbox[c.id] = c.checked ? 1 : 0;
+        ruffle_ios_call_init_checkbox(
+            g_ruffle_player,
+            (const uint8_t*)c.name,  strlen(c.name),
+            (const uint8_t*)c.label.c_str(), strlen(c.label.c_str()),
+            (double)c.id,
+            c.checked ? 1 : 0);
+    }
+
+    // 2 sliders. Ranges come straight from
+    // UIScene_SettingsOptionsMenu.cpp:69 (autosave 0..8) and :82
+    // (difficulty 0..3). Labels match the console format strings.
+    int autosave = mcle_settings_get(MCLE_SETTING_Autosave);
+    int difficulty = mcle_settings_get(MCLE_SETTING_Difficulty);
+    int diffClamped = std::max(0, std::min(difficulty, 3));
+    std::string autosaveLabel = MCLESettingsSliderLabel("SettingsOptionsMenu1080.swf", 5, autosave);
+    std::string difficultyLabel = MCLESettingsSliderLabel("SettingsOptionsMenu1080.swf", 7, diffClamped);
+
+    struct Sl { const char* name; const char* label; int id; int min; int max; int current; };
+    Sl sliders[] = {
+        {"Autosave",   autosaveLabel.c_str(),   5, 0, 8, autosave},
+        {"Difficulty", difficultyLabel.c_str(), 7, 0, 3, diffClamped},
+    };
+    for (auto& s : sliders) {
+        ruffle_ios_call_init_slider(
+            g_ruffle_player,
+            (const uint8_t*)s.name,  strlen(s.name),
+            (const uint8_t*)s.label, strlen(s.label),
+            (double)s.id,
+            s.min, s.max, s.current);
+    }
+
+    // The difficulty description under the slider
+    MCLECallPath("DifficultyText", "Init", { MCLEDifficultyText(diffClamped) });
+
+    // check if we should display the mash-up option
+    if (!mcle_world_is_ticking() && mcle_settings_get_mashup_worlds() != 0xFFFFFFFF) {
+        // the mash-up option is needed
+        g_options_mashup_unhide = true;
+        g_settings_checkbox[kOptionsMashUpControl] = 0;
+        const char* mashUpName = "ShowMashUpWorlds";
+        const std::string mashUpLabel = MCLEStr(IDS_UNHIDE_MASHUP_WORLDS);
+        ruffle_ios_call_init_checkbox(
+            g_ruffle_player,
+            (const uint8_t*)mashUpName, strlen(mashUpName),
+            (const uint8_t*)mashUpLabel.c_str(), strlen(mashUpLabel.c_str()),
+            (double)kOptionsMashUpControl,
+            0);
+    } else {
+        MCLECallPath("", "RemoveObject", { "ShowMashUpWorlds", true });
+        g_options_mashup_unhide = false;
+    }
+    // UIScene::removeControl: no difficulty change once in game
+    if (mcle_world_is_ticking()) {
+        MCLESetPathVisible("DifficultyText", false);
+        MCLECallPath("", "RemoveObject", { "Difficulty", true });
+    }
+    // No language select either (_ENABLE_LANGUAGE_SELECT isn't defined), so
+    // its button is Longer Loading Screens, in and out of game
+    MCLECallPath("Languages", "Init", { MCLELongerLoadingLabel(), kOptionsLanguagesControl });
+
+    // Mirror console's UIScene::gainFocus first-focus path
+    // (UIScene.cpp:1003-1012): call SWF SetFocus(-1) so
+    // FJ_Document.SetFocus picks the authored tabIndex==1 child
+    // and fires handleInitFocus via ExternalInterface.
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    // menuButtonConfig stays unset for this scene so the DPad state
+    // machine doesn't fight the SWF's internal focus handling
+    // (mixed control types, not a flat button list).
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// Ports UIScene_SettingsAudioMenu (Common/UI/UIScene_SettingsAudioMenu.cpp).
+// Two FJ_Slider controls, ranges 0..100, labels formatted "X: N%".
+// Defaults are console's Options profile: music 100, sound 100.
+// Real values need the iOS game-settings store.
+void Host::initSettingsAudioMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    int music = mcle_settings_get(MCLE_SETTING_MusicVolume);
+    int sound = mcle_settings_get(MCLE_SETTING_SoundFXVolume);
+    struct Slider { std::string name; std::string label; int id; int min; int max; int cur; };
+    std::vector<Slider> sliders = {
+        { "Music",
+          MCLESettingsSliderLabel("SettingsAudioMenu1080.swf", 0, music),
+          0, 0, 100, music },
+        { "Sound",
+          MCLESettingsSliderLabel("SettingsAudioMenu1080.swf", 1, sound),
+          1, 0, 100, sound },
+    };
+    for (const Slider& s : sliders) {
+        const char* name  = s.name.c_str();
+        const char* label = s.label.c_str();
+        ruffle_ios_call_init_slider(
+            g_ruffle_player,
+            (const uint8_t*)name,  strlen(name),
+            (const uint8_t*)label, strlen(label),
+            (double)s.id,
+            s.min,
+            s.max,
+            s.cur);
+    }
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// Ports UIScene_SettingsControlMenu (Common/UI/UIScene_SettingsControlMenu.cpp).
+// Two stick-sensitivity sliders named SensitivityInGame and
+// SensitivityInMenu, each a FJ_Slider with range 0..200. Default
+// 100 (no multiplier) until the iOS game-settings store lands.
+void Host::initSettingsControlMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    int ingame = mcle_settings_get(MCLE_SETTING_SensitivityInGame);
+    int inmenu = mcle_settings_get(MCLE_SETTING_SensitivityInMenu);
+    // Label format "%ls: %d%%" from UIScene_SettingsControlMenu.cpp
+    // lines 103 / 111 with IDS_SLIDER_SENSITIVITY_INGAME =
+    // "Game Sensitivity" and IDS_SLIDER_SENSITIVITY_INMENU =
+    // "Interface Sensitivity".
+    struct Slider { std::string name; std::string label; int id; int min; int max; int cur; };
+    std::vector<Slider> sliders = {
+        { "SensitivityInGame",
+          MCLESettingsSliderLabel("SettingsControlMenu1080.swf", 0, ingame),
+          0, 0, 200, ingame },
+        { "SensitivityInMenu",
+          MCLESettingsSliderLabel("SettingsControlMenu1080.swf", 1, inmenu),
+          1, 0, 200, inmenu },
+    };
+    for (const Slider& s : sliders) {
+        const char* name  = s.name.c_str();
+        const char* label = s.label.c_str();
+        ruffle_ios_call_init_slider(
+            g_ruffle_player,
+            (const uint8_t*)name,  strlen(name),
+            (const uint8_t*)label, strlen(label),
+            (double)s.id,
+            s.min,
+            s.max,
+            s.cur);
+    }
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// Ports UIScene_SettingsGraphicsMenu (Common/UI/UIScene_SettingsGraphicsMenu.cpp).
+// Three FJ_CheckBoxes (Clouds, BedrockFog, CustomSkinAnim) and four
+// FJ_Sliders (RenderDistance, Gamma, FOV, InterfaceOpacity).
+//
+// Render Distance slider is 0..5 mapping to block counts {2, 4, 8,
+// 16, 32, 64}. FOV slider is 0..100 mapping to 70..110 degrees via
+// FOV_MIN + sliderVal*(FOV_MAX-FOV_MIN)/100. Defaults here are
+// console's "medium" profile until the iOS game-settings store
+// exists and real values can be read.
+void Host::initSettingsGraphicsMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    // Labels from IDS_CHECKBOX_RENDER_CLOUDS / RENDER_BEDROCKFOG /
+    // CUSTOM_SKIN_ANIM in stringsGeneric.xml.
+    struct Cb { const char* name; const char* label; int id; bool checked; };
+    Cb checkboxes[] = {
+        {"Clouds",         mcle_string(IDS_CHECKBOX_RENDER_CLOUDS),    0, (bool)mcle_settings_get(MCLE_SETTING_Clouds)},
+        {"BedrockFog",     mcle_string(IDS_CHECKBOX_RENDER_BEDROCKFOG), 1, (bool)mcle_settings_get(MCLE_SETTING_BedrockFog)},
+        {"CustomSkinAnim", mcle_string(IDS_CHECKBOX_CUSTOM_SKIN_ANIM),  2, (bool)mcle_settings_get(MCLE_SETTING_CustomSkinAnim)},
+    };
+    MCLESettingsCheckboxesClear();
+    for (auto& c : checkboxes) {
+        g_settings_checkbox[c.id] = c.checked ? 1 : 0;
+        ruffle_ios_call_init_checkbox(
+            g_ruffle_player,
+            (const uint8_t*)c.name,  strlen(c.name),
+            (const uint8_t*)c.label, strlen(c.label),
+            (double)c.id,
+            c.checked ? 1 : 0);
+    }
+
+    static const int kDistanceTable[6] = {2, 4, 8, 16, 32, 64};
+    int renderBlocks = mcle_settings_get(MCLE_SETTING_RenderDistance);
+    int renderLevel = 3;
+    for (int i = 0; i < 6; ++i) if (kDistanceTable[i] == renderBlocks) { renderLevel = i; break; }
+    int gamma = mcle_settings_get(MCLE_SETTING_Gamma);
+    int fovSlider = mcle_settings_get(MCLE_SETTING_FOV);
+    int fovDeg = 70 + (fovSlider * (110 - 70)) / 100;
+    int opacity = mcle_settings_get(MCLE_SETTING_InterfaceOpacity);
+
+    struct Slider { std::string name; std::string label; int id; int min; int max; int cur; };
+    std::vector<Slider> sliders = {
+        { "RenderDistance",
+          MCLESettingsSliderLabel("SettingsGraphicsMenu1080.swf", 3, renderLevel),
+          3, 0, 5, renderLevel },
+        { "Gamma",
+          MCLESettingsSliderLabel("SettingsGraphicsMenu1080.swf", 4, gamma),
+          4, 0, 100, gamma },
+        { "FOV",
+          MCLESettingsSliderLabel("SettingsGraphicsMenu1080.swf", 5, fovSlider),
+          5, 0, 100, fovSlider },
+        { "InterfaceOpacity",
+          MCLESettingsSliderLabel("SettingsGraphicsMenu1080.swf", 6, opacity),
+          6, 0, 100, opacity },
+    };
+    for (const Slider& s : sliders) {
+        const char* name  = s.name.c_str();
+        const char* label = s.label.c_str();
+        ruffle_ios_call_init_slider(
+            g_ruffle_player,
+            (const uint8_t*)name,  strlen(name),
+            (const uint8_t*)label, strlen(label),
+            (double)s.id,
+            s.min,
+            s.max,
+            s.cur);
+    }
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// Ports UIScene_SettingsUIMenu (Common/UI/UIScene_SettingsUIMenu.cpp).
+// Six FJ_CheckBoxes + two FJ_Sliders. UISize sliders have a
+// non-standard range (1..3) because console uses them as direct
+// labels rather than an index. Splitscreen-related controls stay
+// visible as on console, but splitscreen toggling does nothing on
+// iOS since there's no second-controller path.
+void Host::initSettingsUIMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    // Labels from IDS_CHECKBOX_DISPLAY_HUD / DISPLAY_HAND /
+    // DEATH_MESSAGES / ANIMATED_CHARACTER /
+    // VERTICAL_SPLIT_SCREEN / DISPLAY_SPLITSCREENGAMERTAGS in
+    // stringsGeneric.xml. Note that the last four don't have the
+    // "Display" prefix that earlier versions of this port assumed.
+    struct Cb { const char* name; const char* label; int id; bool checked; };
+    Cb checkboxes[] = {
+        {"DisplayHUD",               mcle_string(IDS_CHECKBOX_DISPLAY_HUD),                 0, (bool)mcle_settings_get(MCLE_SETTING_DisplayHUD)},
+        {"DisplayHand",              mcle_string(IDS_CHECKBOX_DISPLAY_HAND),                1, (bool)mcle_settings_get(MCLE_SETTING_DisplayHand)},
+        {"DisplayDeathMessages",     mcle_string(IDS_CHECKBOX_DEATH_MESSAGES),              2, (bool)mcle_settings_get(MCLE_SETTING_DeathMessages)},
+        {"DisplayAnimatedCharacter", mcle_string(IDS_CHECKBOX_ANIMATED_CHARACTER),          3, (bool)mcle_settings_get(MCLE_SETTING_AnimatedCharacter)},
+        {"Splitscreen",              mcle_string(IDS_CHECKBOX_VERTICAL_SPLIT_SCREEN),       4, (bool)mcle_settings_get(MCLE_SETTING_SplitScreenVertical)},
+        {"ShowSplitscreenGamertags", mcle_string(IDS_CHECKBOX_DISPLAY_SPLITSCREENGAMERTAGS), 5, (bool)mcle_settings_get(MCLE_SETTING_DisplaySplitscreenGamertags)},
+    };
+    MCLESettingsCheckboxesClear();
+    for (auto& c : checkboxes) {
+        g_settings_checkbox[c.id] = c.checked ? 1 : 0;
+        ruffle_ios_call_init_checkbox(
+            g_ruffle_player,
+            (const uint8_t*)c.name,  strlen(c.name),
+            (const uint8_t*)c.label, strlen(c.label),
+            (double)c.id,
+            c.checked ? 1 : 0);
+    }
+
+    // UIScene_SettingsUIMenu: the sliders show the setting plus one
+    int uiSize = std::min((int)mcle_settings_get(MCLE_SETTING_UISize), 2) + 1;
+    int uiSizeSplit = std::min((int)mcle_settings_get(MCLE_SETTING_UISizeSplitscreen), 2) + 1;
+    // IDS_SLIDER_UISIZE = "HUD Size",
+    // IDS_SLIDER_UISIZESPLITSCREEN = "HUD Size (Splitscreen)".
+    struct Slider { std::string name; std::string label; int id; int min; int max; int cur; };
+    std::vector<Slider> sliders = {
+        { "UISize",
+          MCLESettingsSliderLabel("SettingsUIMenu1080.swf", 6, uiSize),
+          6, 1, 3, uiSize },
+        { "UISizeSplitscreen",
+          MCLESettingsSliderLabel("SettingsUIMenu1080.swf", 7, uiSizeSplit),
+          7, 1, 3, uiSizeSplit },
+    };
+    for (const Slider& s : sliders) {
+        const char* name  = s.name.c_str();
+        const char* label = s.label.c_str();
+        ruffle_ios_call_init_slider(
+            g_ruffle_player,
+            (const uint8_t*)name,  strlen(name),
+            (const uint8_t*)label, strlen(label),
+            (double)s.id,
+            s.min,
+            s.max,
+            s.cur);
+    }
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+static void MCLERegisterSubstitutionTexture(const std::string& textureName, const unsigned char* pbData, unsigned int dwLength);
+static std::string MCLETexturePackIconName(int index);
+
+// UIScene_LoadOrJoinMenu::AddDefaultButtons, then the saves its tick adds
+// once GetSaveInfo has them, onto the cleared SavesList
+void Host::loadOrJoinAddSaves() {
+    extern PlayerHandle* g_ruffle_player;
+    const char* saves = "SavesList";
+
+    // Default first item: "Create New World". Console adds this
+    // at JOIN_LOAD_CREATE_BUTTON_INDEX=0 regardless of whether
+    // any saves exist (UIScene_LoadOrJoinMenu.cpp:1098).
+    const std::string createText = MCLEStr(IDS_CREATE_NEW_WORLD);
+    const char* createLabel = createText.c_str();
+    ruffle_ios_call_list_add_item(g_ruffle_player,
+        (const uint8_t*)saves, strlen(saves),
+        (const uint8_t*)createLabel, strlen(createLabel),
+        0.0,
+        (const uint8_t*)"", 0);
+    g_load_default_buttons = 1;
+    g_load_mashup_buttons = 0;
+
+    // AddDefaultButtons: then the level generators, the tutorial first
+    int generatorCount = mcle_level_generators_refresh();
+    for (int i = 0; i < generatorCount; ++i) {
+        const char* name = mcle_level_generator_name(i);
+        ruffle_ios_call_list_add_item(g_ruffle_player,
+            (const uint8_t*)saves, strlen(saves),
+            (const uint8_t*)name, strlen(name),
+            (double)g_load_default_buttons,
+            (const uint8_t*)"", 0);
+        // retrieve the save icon from the texture pack, if there is one
+        unsigned int uiTexturePackID = mcle_level_generator_texture_pack(i);
+        if (uiTexturePackID != 0) {
+            // increment the count of the mash-up pack worlds in the save list
+            g_load_mashup_buttons++;
+            int pack = mcle_texture_pack_index(uiTexturePackID);
+            unsigned int dwImageBytes = 0;
+            const unsigned char* pbImageData = mcle_texture_pack_icon(pack, &dwImageBytes);
+            if (dwImageBytes > 0 && pbImageData) {
+                std::string imageName = MCLETexturePackIconName(pack);
+                MCLERegisterSubstitutionTexture(imageName, pbImageData, dwImageBytes);
+                MCLECallPath("SavesList", "SetTextureName", { g_load_default_buttons, imageName });
+            }
+        }
+        ++g_load_default_buttons;
+    }
+
+    // Saves after the default buttons, newest first, item data is the
+    // running index (UIControl_SaveList::addItem passes m_itemCount).
+    int saveCount = mcle_saves_refresh();
+    for (int i = 0; i < saveCount; ++i) {
+        const char* name = mcle_saves_name(i);
+        ruffle_ios_call_list_add_item(g_ruffle_player,
+            (const uint8_t*)saves, strlen(saves),
+            (const uint8_t*)name, strlen(name),
+            (double)(i + g_load_default_buttons),
+            (const uint8_t*)"", 0);
+    }
+
+    // Thumbnails, keyed by save folder like the Win64 tick() does
+    for (int i = 0; i < saveCount; ++i) {
+        std::string thumb = std::string(mcle_saves_thumbnail(i) ? mcle_saves_thumbnail(i) : "");
+        std::vector<uint8_t> png = !thumb.empty() ? host::read_file(thumb) : std::vector<uint8_t>();
+        const char* tex = mcle_saves_folder(i);
+        if (png.size()) {
+            ruffle_ios_register_xui_bitmap(g_ruffle_player,
+                (const uint8_t*)tex, strlen(tex),
+                (const uint8_t*)png.data(), png.size(), 1.0f, 1.0f);
+        }
+        MCLECallPath("SavesList", "SetTextureName",
+                     { i + g_load_default_buttons, std::string(tex ? tex : "") });
+    }
+}
+
+// Ports UIScene_LoadOrJoinMenu constructor
+// (Common/UI/UIScene_LoadOrJoinMenu.cpp:536+). Two
+// FJ_ButtonList_ListIconLeft controls on stage:
+//   SavesList (id 0, eControl_SavesList) - user's worlds.
+//   JoinList  (id 1, eControl_GamesList) - online sessions.
+// The first default entry on SavesList is "Create New World"
+// (JOIN_LOAD_CREATE_BUTTON_INDEX=0, AddDefaultButtons ln 1098).
+// Actual save enumeration + level-generator listing is a
+// separate follow-up tied to LCE save-format parsing; this
+// landing just gets the widget plumbing and scene transition
+// working so Play Game -> world list -> Back works end-to-end.
+// JoinList stays empty on iOS (no netcode yet); the NoGames
+// label is what the authored scene shows in that state.
+void Host::initLoadOrJoinMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    // Initialise starts on the first item, the focus is wherever SetFocus
+    // below puts it, and input is back on by the end like the constructor
+    // and handleGainFocus
+    g_load_save_list_index = 0;
+    g_load_focus_control = -1;
+    g_load_or_join_ignore_input = false;
+
+    attachMenuScenery();
+
+    // Init both lists with the console-side EControls enum ids.
+    // matches UIScene_LoadOrJoinMenu.h:19-26.
+    const char* saves = "SavesList";
+    const char* games = "JoinList";
+    ruffle_ios_call_list_init(g_ruffle_player,
+        (const uint8_t*)saves, strlen(saves), 0.0);
+    ruffle_ios_call_list_init(g_ruffle_player,
+        (const uint8_t*)games, strlen(games), 1.0);
+
+    // Seed title labels so they stop rendering their authoring-
+    // time placeholder text ("FJ_Label_Black" etc.). Mirrors
+    // UIScene_LoadOrJoinMenu::Initialise line 227-230:
+    //   m_labelSavesListTitle.init( IDS_START_GAME );  "Start Game"
+    //   m_labelJoinListTitle.init(  IDS_JOIN_GAME );   "Join Game"
+    //   m_labelNoGames.init(        IDS_NO_GAMES_FOUND ); hidden initially
+    // FJ_Label.SetLabel flips m_bInitialised = true itself (unlike
+    // FJ_Button), so calling SetLabel without a separate Init
+    // works and avoids a new label-specific FFI.
+    struct LabelSeed { const char* name; std::string text; };
+    LabelSeed labels[] = {
+        { "SavesListTitle", MCLEStr(IDS_START_GAME) },
+        { "JoinListTitle",  MCLEStr(IDS_JOIN_GAME) },
+        { "NoGames",        MCLEStr(IDS_NO_GAMES_FOUND) },
+    };
+    for (auto& s : labels) {
+        ruffle_ios_call_init_on_named_child(
+            g_ruffle_player,
+            (const uint8_t*)s.name, strlen(s.name),
+            (const uint8_t*)"SetLabel", 8,
+            (const uint8_t*)s.text.c_str(), strlen(s.text.c_str()),
+            0.0);
+    }
+
+    // Console starts NoGames hidden (UIScene_LoadOrJoinMenu.cpp:230
+    // setVisible(false)) and only shows it when the join list
+    // actually ends up empty. The networking layer that fills the
+    // join list doesn't exist yet, so for now it's turned on
+    // to communicate "no sessions" to the user instead of leaving
+    // blank space. Revisit once real session discovery exists.
+    const char* noGames = "NoGames";
+    ruffle_ios_set_root_child_visible(
+        g_ruffle_player,
+        (const uint8_t*)noGames, strlen(noGames),
+        1);
+
+    // Hide the timer controls. Console shows them (line 231-232)
+    // because they're part of the auto-refresh cadence for save
+    // thumbnails / session discovery; with neither wired up on
+    // iOS the spinning timer art just sits there looking like a
+    // bug. Revisit when the corresponding backends land.
+    const char* kTimers[] = { "SavesTimer", "JoinTimer" };
+    for (size_t i = 0; i < sizeof(kTimers) / sizeof(kTimers[0]); ++i) {
+        const char* timer = kTimers[i];
+        ruffle_ios_set_root_child_visible(
+            g_ruffle_player,
+            (const uint8_t*)timer, strlen(timer),
+            0);
+    }
+
+    // Wipe anything still in the lists from a prior scene load
+    // (shouldn't happen since replace_root_movie clears AS3
+    // state, but defensive - console also clears before
+    // populating in UIScene_LoadOrJoinMenu::Initialise).
+    ruffle_ios_call_list_remove_all(g_ruffle_player,
+        (const uint8_t*)saves, strlen(saves));
+    ruffle_ios_call_list_remove_all(g_ruffle_player,
+        (const uint8_t*)games, strlen(games));
+
+    loadOrJoinAddSaves();
+
+    // m_spaceIndicatorSaves: init(L"", eControl_SpaceIndicator, 0, MAXIMUM_SAVE_STORAGE)
+    // then addSave per save, with the focused save highlighted.
+    MCLECallPath("SaveSizeBar", "Init", { "" });
+    MCLESelectSaveSize(-1);
+
+    // Auto-focus via SWF's SetFocus(-1). SavesList has tabIndex=1
+    // per LoadOrJoinMenu.as __setTab_SavesList_... so FJ_Document.
+    // SetFocus picks it.
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// The message box was on the same stage and took its focus. The scene's own
+// movie keeps it on Windows64, so it goes back to the save it was on.
+static void MCLELoadOrJoinRefocusSave(void) {
+    MCLECallPath("SavesList", "HighlightItem", { g_load_save_list_index });
+}
+
+// UIScene_LoadOrJoinMenu::KeyboardCompleteWorldNameCallback. The keyboard
+// has gone back, and the list's movie reloads after it, which is the
+// e_SavesRepopulate RenameSaveDataReturned asks for.
+static int MCLELoadOrJoinKeyboardComplete(void* lpParam, const bool bRes) {
+    g_load_or_join_ignore_input = false;
+    if (bRes) {
+        // Win64_GetKeyboardText
+        const std::wstring& text = mcle_keyboard_text();
+        // check the name is valid
+        if (!text.empty()) {
+            int listPos = g_load_save_list_index - g_load_default_buttons;
+            mcle_saves_rename(listPos, MCLEStringFromWide(text).c_str());
+        }
+    }
+    return 0;
+}
+
+// UIScene_LoadOrJoinMenu::handleInput's ACTION_MENU_RIGHT_SCROLL, and the
+// ACTION_MENU_X Windows64 adds for it. Saving is never disabled and there's
+// always space for a save, so it's Save Options rather than Delete Save.
+void Host::loadOrJoinSaveOptions() {
+    if (g_load_or_join_ignore_input) return;
+    if (MCLELoadOrJoinMashUpWorldHasFocus()) {
+        // hiding a mash-up world
+        if (g_load_save_list_index != 0) {
+            int lGenID = g_load_save_list_index - 1;
+            if (!mcle_level_generator_is_tutorial(lGenID) &&
+                mcle_level_generator_requires_texture_pack(lGenID)) {
+                // CMinecraftApp::HideMashupPackWorld, mash-up ids start at 1024
+                unsigned int uiPackID = mcle_level_generator_texture_pack(lGenID) - 1024;
+                mcle_settings_set_mashup_worlds(mcle_settings_get_mashup_worlds() & ~(1u << uiPackID));
+                // update the saves list
+                loadOrJoinRepopulate();
+            }
+        }
+        mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+        return;
+    }
+    // 4J-PB - check we are on a valid save
+    if (!MCLELoadOrJoinSavesListHasFocus() || g_load_default_buttons == 0 ||
+        g_load_save_list_index < g_load_default_buttons) return;
+    g_load_or_join_ignore_input = true;
+    presentDialogWithTitle_content_buttons_focusIndex_callback(
+        MCLEStr(IDS_TOOLTIPS_SAVEOPTIONS),
+        MCLEStr(IDS_TEXT_SAVEOPTIONS),
+        { MCLEStr(IDS_CONFIRM_CANCEL), MCLEStr(IDS_TITLE_RENAMESAVE),
+          MCLEStr(IDS_TOOLTIPS_DELETESAVE) },
+        0,
+        [this](MCLEDialogResult r) {
+            loadOrJoinSaveOptionsReturned(r);
+        });
+    mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+}
+
+// UIScene_LoadOrJoinMenu::SaveOptionsDialogReturned, results switched for
+// this dialog: the first button (Cancel) is Accept
+void Host::loadOrJoinSaveOptionsReturned(MCLEDialogResult result) {
+    MCLELoadOrJoinRefocusSave();
+    if (result == MCLEDialogResultDecline) {
+        // rename: Windows64 without the keyboard and mouse brings up
+        // UIScene_Keyboard on the save's name
+        g_load_or_join_ignore_input = true;
+        MCLEKeyboardInitData kbData;
+        kbData.title = MCLEWideString(MCLEStr(IDS_RENAME_WORLD_TITLE));
+        const char* saveName = mcle_saves_name(g_load_save_list_index - g_load_default_buttons);
+        kbData.defaultText = MCLEWideString(std::string(saveName ? saveName : ""));
+        kbData.maxChars = 25;
+        kbData.callback = &MCLELoadOrJoinKeyboardComplete;
+        navigateToKeyboard(kbData);
+    } else if (result == MCLEDialogResultThird) {
+        // delete the save game
+        // Have to ask the player if they are sure they want to delete this game
+        presentDialogWithTitle_content_buttons_focusIndex_callback(
+            MCLEStr(IDS_TOOLTIPS_DELETESAVE),
+            MCLEStr(IDS_TEXT_DELETE_SAVE),
+            { MCLEStr(IDS_CONFIRM_CANCEL), MCLEStr(IDS_CONFIRM_OK) },
+            0,
+            [this](MCLEDialogResult r) {
+                loadOrJoinDeleteSaveDialogReturned(r);
+            });
+    } else {
+        // reset the tooltips
+        MCLELoadOrJoinTooltips();
+        g_load_or_join_ignore_input = false;
+    }
+}
+
+// UIScene_LoadOrJoinMenu::DeleteSaveDialogReturned, results switched: OK
+// deletes. Windows64 removes the save's own folder rather than going through
+// StorageManager.DeleteSaveData.
+void Host::loadOrJoinDeleteSaveDialogReturned(MCLEDialogResult result) {
+    MCLELoadOrJoinRefocusSave();
+    // Check that we have a valid save selected (can get a bad index if the save list has been refreshed)
+    bool validSelection = g_load_default_buttons != 0 && g_load_save_list_index >= g_load_default_buttons;
+    if (result == MCLEDialogResultDecline && validSelection) {
+        // Use m_saveDetails (sorted display order) so the correct folder is targeted
+        int displayIdx = g_load_save_list_index - g_load_default_buttons;
+        bool bSuccess = mcle_saves_delete(displayIdx) != 0;
+        loadOrJoinDeleteSaveDataReturned(bSuccess);
+    } else {
+        g_load_or_join_ignore_input = false;
+    }
+}
+
+// UIScene_LoadOrJoinMenu::DeleteSaveDataReturned, then its tick's
+// e_SavesRepopulateAfterDelete: the list is wiped and filled again from disk
+void Host::loadOrJoinDeleteSaveDataReturned(bool bRes) {
+    if (bRes) {
+        loadOrJoinRepopulate();
+    } else {
+        g_load_or_join_ignore_input = false;
+        MCLELoadOrJoinTooltips();
+    }
+}
+
+// UIScene_LoadOrJoinMenu::tick's e_SavesRepopulateAfterDelete and
+// e_SavesRepopulateAfterMashupHide
+void Host::loadOrJoinRepopulate() {
+    extern PlayerHandle* g_ruffle_player;
+    g_load_or_join_ignore_input = false;
+    const char* saves = "SavesList";
+    ruffle_ios_call_list_remove_all(g_ruffle_player, (const uint8_t*)saves, strlen(saves));
+    loadOrJoinAddSaves();
+    // clearList leaves the selection on the first button, Create New World
+    g_load_save_list_index = 0;
+    // m_spaceIndicatorSaves.reset(), then addSave for each
+    MCLESelectSaveSize(-1);
+    MCLELoadOrJoinTooltips();
+}
+
+static std::string MCLEDifficultyLabel(int d) {
+    static const int kTitles[4] = {
+        IDS_DIFFICULTY_TITLE_PEACEFUL, IDS_DIFFICULTY_TITLE_EASY,
+        IDS_DIFFICULTY_TITLE_NORMAL, IDS_DIFFICULTY_TITLE_HARD,
+    };
+    d = std::max(0, std::min(d, 3));
+    return host::format("%s: %s", MCLEStr(IDS_SLIDER_DIFFICULTY).c_str(), MCLEStr(kTitles[d]).c_str());
+}
+
+// UIScene::registerSubstitutionTexture, a png the movie shows by name
+static void MCLERegisterSubstitutionTexture(const std::string& textureName, const unsigned char* pbData, unsigned int dwLength) {
+    extern PlayerHandle* g_ruffle_player;
+    const char* tex = textureName.c_str();
+    ruffle_ios_register_xui_bitmap(g_ruffle_player, (const uint8_t*)tex, strlen(tex), pbData, dwLength, 1.0f, 1.0f);
+}
+
+static std::string MCLETexturePackIconName(int index) {
+    return host::format("tpack%08x", mcle_texture_pack_id(index));
+}
+
+// The texture pack list as the CreateWorldMenu and LoadMenu constructors
+// fill it: each pack with an icon, the icon registered as tpack<id>
+static void MCLEAddTexturePacks(void) {
+    int texturePacksCount = mcle_texture_pack_count();
+    for (int i = 0; i < texturePacksCount; ++i) {
+        unsigned int dwImageBytes = 0;
+        const unsigned char* pbImageData = mcle_texture_pack_icon(i, &dwImageBytes);
+        if (dwImageBytes > 0 && pbImageData) {
+            std::string imageName = MCLETexturePackIconName(i);
+            MCLERegisterSubstitutionTexture(imageName, pbImageData, dwImageBytes);
+            MCLECallPath("MainPanel.TexturePackSelector", "addPack", { i, imageName });
+        }
+    }
+}
+
+// IUIScene_StartGame::UpdateTexturePackDescription. A slot without a pack
+// is one from TMS that isn't installed, which upstream hasn't implemented.
+static void MCLEUpdateTexturePackDescription(int index) {
+    if (index < 0 || index >= mcle_texture_pack_count()) return;
+    std::string name = mcle_texture_pack_name(index);
+    std::string desc = mcle_texture_pack_desc(index);
+    MCLECallPath("TexturePackPanel.TexturePackName", "SetLabel", { name });
+    MCLECallPath("TexturePackPanel.TexturePackDescription", "SetLabel", { desc });
+
+    MCLECallPath("TexturePackPanel.Icon", "SetTextureName", { MCLETexturePackIconName(index) });
+
+    unsigned int dwImageBytes = 0;
+    const unsigned char* pbImageData = mcle_texture_pack_comparison(index, &dwImageBytes);
+    if (dwImageBytes > 0 && pbImageData) {
+        std::string imageName = host::format("texturePackComparison%08x", mcle_texture_pack_id(index));
+        MCLERegisterSubstitutionTexture(imageName, pbImageData, dwImageBytes);
+        MCLECallPath("TexturePackPanel.ComparisonPic", "SetTextureName", { imageName });
+    } else {
+        MCLECallPath("TexturePackPanel.ComparisonPic", "SetTextureName", { "" });
+    }
+}
+
+// The list, the current pack's description and its slot selected. The
+// movie is made again coming back from More Options, so the description
+// panel slides out again if it was out on the one before.
+static void MCLEFillTexturePackList(void) {
+    MCLEAddTexturePacks();
+    MCLEUpdateTexturePackDescription(g_texture_pack_index);
+    MCLECallPath("MainPanel.TexturePackSelector", "SelectSlot", { g_texture_pack_index });
+    if (g_texture_pack_desc_displayed) MCLECallPath("", "SlideLeft", {});
+}
+
+// IUIScene_StartGame::UpdateCurrentTexturePack. A slot without a pack is
+// the upsell, which upstream hasn't implemented.
+static void MCLEUpdateCurrentTexturePack(int iSlot) {
+    g_texture_pack_index = iSlot;
+    if (iSlot >= 0 && iSlot < mcle_texture_pack_count()) {
+        g_start_options.dwTexturePack = mcle_texture_pack_id(iSlot);
+    }
+}
+
+// IUIScene_StartGame::HandleDLCMountingComplete, from the end of the DLC
+// mount. The scene keeps its state under More Options, its list is filled
+// when it's back.
+extern "C" void mcle_start_game_dlc_mounting_complete(void) {
+    g_texture_pack_index = mcle_texture_pack_index(0);
+    g_texture_pack_waiting_for_dlc = false;
+    if (g_current_scene_name != "CreateWorldMenu1080.swf" &&
+        g_current_scene_name != "LoadMenu1080.swf") {
+        return;
+    }
+    // clear out the current texture pack list
+    MCLECallPath("MainPanel.TexturePackSelector", "removeAllItems", {});
+    MCLEAddTexturePacks();
+    MCLEUpdateTexturePackDescription(g_texture_pack_index);
+    MCLECallPath("MainPanel.TexturePackSelector", "SelectSlot", { g_texture_pack_index });
+}
+
+// UIScene_LoadMenu constructor (Win64 save path), plus what its tick()
+// pulls from the thumbnail metadata. Control ids follow the scene's
+// EControls: GameMode 0, Difficulty 1, MoreOptions 2, LoadWorld 3,
+// TexturePackList 4, OnlineGame 5.
+void Host::initLoadMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    attachMenuScenery();
+
+    int idx = g_load_save_index;
+    // Opened from the save list. Back from More Options the scene and what
+    // was picked on it are still there.
+    if (g_load_menu_fresh) {
+        g_load_menu_fresh = false;
+        g_load_game_mode = 0;
+        g_load_has_been_in_creative = false;
+        unsigned int opts = 0;
+        bool read = idx >= 0 && idx < mcle_saves_count() && mcle_saves_host_options(idx, &opts);
+        if (read) {
+            g_load_has_been_in_creative = (opts & 0x200) != 0;   // GAME_HOST_OPTION_BITMASK_BEENINCREATIVE
+            g_load_game_mode = (opts & 0x30) >> 4;               // GAME_HOST_OPTION_BITMASK_GAMETYPE
+            if (g_load_game_mode > 2) g_load_game_mode = 0;
+        }
+        g_start_options = MCLELaunchMoreOptions();
+        MCLEStartGameOffline(g_start_options);
+        mcle_load_menu_options(g_start_options, read, opts, g_load_is_save_owner);
+
+        // IUIScene_StartGame's constructor, then the texture pack the save
+        // was played with from the thumbnail like tick() reads it
+        g_texture_pack_desc_displayed = false;
+        if (idx >= 0 && idx < mcle_saves_count()) g_start_options.dwTexturePack = mcle_saves_texture_pack(idx);
+        // Level gen
+        if (g_load_level_gen >= 0) {
+            unsigned int uiTexturePackID = mcle_level_generator_texture_pack(g_load_level_gen);
+            if (uiTexturePackID != 0) g_start_options.dwTexturePack = uiTexturePackID;
+            // Set this level as created in creative mode, so that people can't use the themed worlds as an easy way to get achievements
+            g_load_has_been_in_creative = mcle_level_generator_in_creative(g_load_level_gen) != 0;
+        }
+        g_texture_pack_index = mcle_texture_pack_index(g_start_options.dwTexturePack);
+        // block input if we're waiting for DLC to install. The end of dlc mounting fills the list.
+        g_texture_pack_waiting_for_dlc = mcle_dlc_start_install_process(0);
+    }
+
+    MCLECallPath("MainPanel.GameName", "Init", { MCLEStr(IDS_WORLD_NAME) });
+    MCLECallPath("MainPanel.Seed", "Init", { "" });
+    MCLECallPath("MainPanel.CreatedMode", "Init", { MCLEStr(IDS_CREATED_IN_SURVIVAL) });
+    MCLECallPath("MainPanel.GameModeToggle", "Init", { MCLEStr(IDS_GAMEMODE_SURVIVAL), 0 });
+    MCLECallPath("MainPanel.MoreOptions", "Init", { MCLEStr(IDS_MORE_OPTIONS), 2 });
+    MCLECallPath("MainPanel.LoadSettings", "Init", { MCLEStr(IDS_LOAD), 3 });
+    MCLECallPath("MainPanel.TexturePackSelector", "Init", { MCLEStr(IDS_DLC_MENU_TEXTUREPACKS), 4 });
+    MCLECallPath("TexturePackPanel.TexturePackName", "Init", { "" });
+    MCLECallPath("TexturePackPanel.TexturePackDescription", "Init", { "" });
+
+    int diff = std::max(0, std::min((int)mcle_settings_get(MCLE_SETTING_Difficulty), 3));
+    MCLECallPath("MainPanel.Difficulty", "Init", { MCLEDifficultyLabel(diff), 1, 0, 3, diff });
+
+    // Not signed in to an online service, so the box is off and disabled
+    MCLECallPath("MainPanel.CheckboxOnline", "EnableCheckBox", { false });
+    MCLECallPath("MainPanel.CheckboxOnline", "Init", { MCLEStr(IDS_ONLINE_GAME), 5, false });
+
+    if (idx >= 0 && idx < mcle_saves_count()) {
+        MCLECallPath("MainPanel.GameName", "SetLabel",
+                     { std::string(mcle_saves_name(idx) ? mcle_saves_name(idx) : "") });
+        const char* seed = mcle_saves_seed(idx);
+        std::string seedLabel = (seed && seed[0])
+            ? host::format("%s: %s", MCLEStr(IDS_SEED).c_str(), seed) : "";
+        MCLECallPath("MainPanel.Seed", "SetLabel", { seedLabel });
+
+        std::string thumb = std::string(mcle_saves_thumbnail(idx) ? mcle_saves_thumbnail(idx) : "");
+        std::vector<uint8_t> thumbData = !thumb.empty() ? host::read_file(thumb) : std::vector<uint8_t>();
+        if (thumbData.size()) {
+            const char* tex = mcle_saves_folder(idx);
+            ruffle_ios_register_xui_bitmap(g_ruffle_player,
+                (const uint8_t*)tex, strlen(tex),
+                (const uint8_t*)thumbData.data(), thumbData.size(), 1.0f, 1.0f);
+            MCLECallPath("MainPanel.LevelIcon", "SetTextureName",
+                         { std::string(tex ? tex : "") });
+        }
+
+        MCLECallPath("MainPanel.CreatedMode", "SetLabel",
+                     { MCLEStr(g_load_has_been_in_creative ? IDS_CREATED_IN_CREATIVE : IDS_CREATED_IN_SURVIVAL) });
+        MCLECallPath("MainPanel.GameModeToggle", "SetLabel", { MCLELoadGameModeLabel() });
+    }
+
+    if (!g_texture_pack_waiting_for_dlc) MCLEFillTexturePackList();
+
+    // Level gen
+    if (g_load_level_gen >= 0) {
+        MCLECallPath("MainPanel.GameName", "SetLabel",
+                     { std::string(mcle_level_generator_display_name(g_load_level_gen)) });
+        if (mcle_level_generator_texture_pack(g_load_level_gen) != 0) {
+            MCLECallPath("MainPanel.TexturePackSelector", "EnableSelector", { false });
+
+            // retrieve the save icon from the texture pack, if there is one
+            unsigned int dwImageBytes = 0;
+            const unsigned char* pbImageData = mcle_texture_pack_icon(g_texture_pack_index, &dwImageBytes);
+            if (dwImageBytes > 0 && pbImageData) {
+                MCLERegisterSubstitutionTexture("loadsave", pbImageData, dwImageBytes);
+                MCLECallPath("MainPanel.LevelIcon", "SetTextureName", { "loadsave" });
+            }
+        }
+        MCLECallPath("MainPanel.CreatedMode", "SetLabel",
+                     { MCLEStr(g_load_has_been_in_creative ? IDS_CREATED_IN_CREATIVE : IDS_CREATED_IN_SURVIVAL) });
+    }
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+void Host::loadMenuSlider_value(int sliderId, int value) {
+    if (sliderId != 1) return;   // eControl_Difficulty
+    const unsigned char difficulty = (unsigned char)std::max(0, std::min(value, 3));
+    // UIControl_Slider::handleSliderMove
+    if (mcle_settings_get(MCLE_SETTING_Difficulty) != difficulty) MCLEPlayUISFX("scroll");
+    mcle_settings_set(MCLE_SETTING_Difficulty, difficulty);
+    MCLECallPath("MainPanel.Difficulty", "SetLabel", { MCLEDifficultyLabel(value) });
+}
+
+void Host::loadMenuPress_child(int controlId, int childId) {
+    if (g_texture_pack_waiting_for_dlc) return;
+    mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+    switch (controlId) {
+        case 0: {   // eControl_GameMode
+            // Survival, Creative, Adventure and round again
+            g_load_game_mode = (g_load_game_mode + 1) % 3;
+            MCLECallPath("MainPanel.GameModeToggle", "SetLabel", { MCLELoadGameModeLabel() });
+            break;
+        }
+        case 2:     // eControl_MoreOptions
+            navigateForwardTo("LaunchMoreOptionsMenu1080.swf");
+            break;
+        case 3:     // eControl_LoadWorld
+            loadMenuStartSharedLaunchFlow();
+            break;
+        case 4:     // eControl_TexturePackList
+            MCLEUpdateCurrentTexturePack(childId);
+            break;
+        default:
+            break;
+    }
+}
+
+// IUIScene_StartGame::handleSelectionChanged, and what tick does with it
+void Host::startGameSelectionChanged(int selectedId) {
+    // m_iSetTexturePackDescription
+    MCLEUpdateTexturePackDescription(selectedId);
+    // m_bShowTexturePackDescription
+    if (!g_texture_pack_desc_displayed) {
+        MCLECallPath("", "SlideLeft", {});
+        g_texture_pack_desc_displayed = true;
+    }
+}
+
+// StartSharedLaunchFlow's check that the selected texture pack is there.
+// TexturePackDialogReturned only takes the input back off hold, there's
+// no store to get it from. true when it isn't there and the dialog is up.
+bool Host::startGameTexturePackMissing() {
+    if (g_start_options.dwTexturePack == 0 || mcle_texture_pack_installed(g_start_options.dwTexturePack)) return false;
+    presentDialogWithTitle_content_buttons_focusIndex_callback(
+        MCLEStr(IDS_DLC_TEXTUREPACK_NOT_PRESENT_TITLE),
+        MCLEStr(IDS_DLC_TEXTUREPACK_NOT_PRESENT),
+        { MCLEStr(IDS_TEXTUREPACK_FULLVERSION), MCLEStr(IDS_CONFIRM_CANCEL) },
+        0,
+        [=](MCLEDialogResult r) {
+            g_create_ignore_input = false;
+        });
+    return true;
+}
+
+// UIScene_LoadMenu::StartSharedLaunchFlow: the texture pack has to be there,
+// confirm a Nether reset, then LaunchGame
+void Host::loadMenuStartSharedLaunchFlow() {
+    // Check if we need to upsell the texture pack
+    if (startGameTexturePackMissing()) return;
+    if (g_start_options.bResetNether) {
+        presentDialogWithTitle_content_buttons_focusIndex_callback(
+            MCLEStr(IDS_RESETNETHER_TITLE),
+            MCLEStr(IDS_RESETNETHER_TEXT),
+            { MCLEStr(IDS_DONT_RESET_NETHER), MCLEStr(IDS_RESET_NETHER) },
+            0,
+            [this](MCLEDialogResult r) {
+                // CheckResetNetherReturned: results switched for this dialog
+                if (r == MCLEDialogResultDecline) {
+                    loadMenuLaunchGame();
+                } else if (r == MCLEDialogResultAccept) {
+                    g_start_options.bResetNether = false;
+                    loadMenuLaunchGame();
+                }
+            });
+        return;
+    }
+    loadMenuLaunchGame();
+}
+
+// UIScene_LoadMenu::LaunchGame: creative and host privileges confirm prompts, then load.
+void Host::loadMenuLaunchGame() {
+    bool creative = (g_load_game_mode == 1);
+    int textId = 0;
+    if (creative || g_load_has_been_in_creative) {
+        if (!creative) textId = IDS_CONFIRM_START_SAVEDINCREATIVE;
+        else if (!g_load_has_been_in_creative) textId = IDS_CONFIRM_START_CREATIVE;
+    } else if (g_start_options.bHostPrivileges) {
+        textId = IDS_CONFIRM_START_HOST_PRIVILEGES;
+    }
+    if (textId) {
+        presentDialogWithTitle_content_buttons_focusIndex_callback(
+            MCLEStr(IDS_TITLE_START_GAME),
+            MCLEStr(textId),
+            { MCLEStr(IDS_CONFIRM_OK), MCLEStr(IDS_CONFIRM_CANCEL) },
+            0,
+            [this](MCLEDialogResult r) {
+                if (r == MCLEDialogResultAccept) startLoadingSelectedSave();
+            });
+        return;
+    }
+    startLoadingSelectedSave();
+}
+
+// StartGameFromSave -> NavigateToScene(eUIScene_FullscreenProgress)
+void Host::startLoadingSelectedSave() {
+    if (g_load_level_gen >= 0) {
+        if (g_loading_world) return;
+        navigateForwardTo("FullscreenProgress1080.swf");
+        if (mcle_game_load_level_gen(g_load_level_gen, g_start_options, g_load_is_save_owner,
+                                     std::max(0, std::min((int)mcle_settings_get(MCLE_SETTING_Difficulty), 3)),
+                                     g_load_game_mode)) {
+            g_loading_world = true;
+        } else {
+            host::log("[loadmenu] level generator %d didn't start", g_load_level_gen);
+        }
+        return;
+    }
+    int idx = g_load_save_index;
+    if (idx < 0 || idx >= mcle_saves_count() || g_loading_world) return;
+    std::string folder = std::string(mcle_saves_folder(idx) ? mcle_saves_folder(idx) : "");
+    mcle_storage_set_save_folder(folder.c_str());
+    mcle_game_set_load_options(g_start_options, g_load_is_save_owner,
+                               std::max(0, std::min((int)mcle_settings_get(MCLE_SETTING_Difficulty), 3)),
+                               g_load_game_mode);
+    navigateForwardTo("FullscreenProgress1080.swf");
+    if (mcle_game_start(folder.c_str())) {
+        g_loading_world = true;
+    } else {
+        host::log("[loadmenu] mcle_game_start refused for %s", folder.c_str());
+    }
+}
+
+// UIScene_CreateWorldMenu::KeyboardCompleteWorldNameCallback. The keyboard
+// has gone back but the menu's movie only reloads after, where the name's
+// label and the Create button come from m_worldName.
+static int MCLECreateWorldKeyboardComplete(void* lpParam, const bool bRes) {
+    g_create_ignore_input = false;
+    // 4J HEG - No reason to set value if keyboard was cancelled
+    if (bRes) {
+        // Win64_GetKeyboardText
+        const std::wstring& text = mcle_keyboard_text();
+        if (!text.empty()) g_create_world_name = MCLEStringFromWide(text);
+    }
+    return 0;
+}
+
+static std::string MCLECreateWorldGameModeLabel(void) {
+    switch (g_create_game_mode_id) {
+        case 1:  return MCLEStr(IDS_GAMEMODE_CREATIVE);
+        case 2:  return MCLEStr(IDS_GAMEMODE_ADVENTURE);
+        default: return MCLEStr(IDS_GAMEMODE_SURVIVAL);
+    }
+}
+
+// UIScene_CreateWorldMenu constructor. Coming back from More Options or the
+// keyboard this is handleGainFocus, the scene's state is still in the
+// statics. Control ids follow its EControls: EditWorldName 0,
+// TexturePackList 1, GameModeToggle 2, Difficulty 3, MoreOptions 4,
+// NewWorld 5, OnlineGame 6.
+void Host::initCreateWorldMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    attachMenuScenery();
+    // No keyboard or dialog outlives the movie
+    g_create_ignore_input = false;
+
+    MCLECallPath("MainPanel.WorldName", "Init", { MCLEStr(IDS_WORLD_NAME) });
+    MCLECallPath("MainPanel.EditWorldName", "Init", { g_create_world_name, 0 });
+    MCLECallPath("MainPanel.GameModeToggle", "Init", { MCLECreateWorldGameModeLabel(), 2 });
+    MCLECallPath("MainPanel.MoreOptions", "Init", { MCLEStr(IDS_MORE_OPTIONS), 4 });
+    MCLECallPath("MainPanel.NewWorld", "Init", { MCLEStr(IDS_CREATE_NEW_WORLD), 5 });
+    MCLECallPath("MainPanel.NewWorld", "EnableButton", { !g_create_world_name.empty() });
+    MCLECallPath("MainPanel.TexturePackSelector", "Init", { MCLEStr(IDS_DLC_MENU_TEXTUREPACKS), 1 });
+    MCLECallPath("TexturePackPanel.TexturePackName", "Init", { "" });
+    MCLECallPath("TexturePackPanel.TexturePackDescription", "Init", { "" });
+
+    int diff = std::max(0, std::min((int)mcle_settings_get(MCLE_SETTING_Difficulty), 3));
+    MCLECallPath("MainPanel.Difficulty", "Init", { MCLEDifficultyLabel(diff), 3, 0, 3, diff });
+
+    // Not signed in to an online service, so the box is off and disabled
+    MCLECallPath("MainPanel.CheckboxOnline", "EnableCheckBox", { false });
+    MCLECallPath("MainPanel.CheckboxOnline", "Init",
+                 { MCLEStr(IDS_ONLINE_GAME), 6, g_start_options.bOnlineGame });
+
+    if (!g_texture_pack_waiting_for_dlc) MCLEFillTexturePackList();
+
+    // UIScene::reloadMovie coming back from the keyboard puts the focus back
+    // on eControl_EditWorldName, the name it was for
+    ruffle_ios_call_root_set_focus(g_ruffle_player, g_menu_reloading ? 0.0 : -1.0);
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// UIScene_CreateWorldMenu::handleSliderMove
+void Host::createWorldSlider_value(int sliderId, int value) {
+    if (sliderId != 3) return;   // eControl_Difficulty
+    const unsigned char difficulty = (unsigned char)std::max(0, std::min(value, 3));
+    // UIControl_Slider::handleSliderMove
+    if (mcle_settings_get(MCLE_SETTING_Difficulty) != difficulty) MCLEPlayUISFX("scroll");
+    mcle_settings_set(MCLE_SETTING_Difficulty, difficulty);
+    MCLECallPath("MainPanel.Difficulty", "SetLabel", { MCLEDifficultyLabel(value) });
+}
+
+// UIScene_CreateWorldMenu::handlePress
+void Host::createWorldPress_child(int controlId, int childId) {
+    if (g_create_ignore_input || g_texture_pack_waiting_for_dlc) return;
+    mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+    switch (controlId) {
+        case 0: {   // eControl_EditWorldName
+            g_create_ignore_input = true;
+            // Windows64 without the keyboard and mouse: UIScene_Keyboard
+            MCLEKeyboardInitData kbData;
+            kbData.title = MCLEWideString(MCLEStr(IDS_CREATE_NEW_WORLD));
+            if (!MCLELabelAt("MainPanel.EditWorldName", &kbData.defaultText)) {
+                kbData.defaultText = MCLEWideString(g_create_world_name);
+            }
+            kbData.maxChars = 25;
+            kbData.callback = &MCLECreateWorldKeyboardComplete;
+            navigateToKeyboard(kbData);
+            break;
+        }
+        case 2:     // eControl_GameModeToggle
+            switch (g_create_game_mode_id) {
+                case 0: // Creative
+                    g_create_game_mode_id = 1;
+                    g_create_game_mode_creative = true;
+                    break;
+                case 1: // Adventure
+                    g_create_game_mode_id = 2;
+                    g_create_game_mode_creative = false;
+                    break;
+                case 2: // Survival
+                    g_create_game_mode_id = 0;
+                    g_create_game_mode_creative = false;
+                    break;
+            }
+            MCLECallPath("MainPanel.GameModeToggle", "SetLabel", { MCLECreateWorldGameModeLabel() });
+            break;
+        case 4:     // eControl_MoreOptions
+            navigateForwardTo("LaunchMoreOptionsMenu1080.swf");
+            break;
+        case 1:     // eControl_TexturePackList
+            MCLEUpdateCurrentTexturePack(childId);
+            break;
+        case 5:     // eControl_NewWorld
+            createWorldStartSharedLaunchFlow();
+            break;
+        default:
+            break;
+    }
+}
+
+// UIScene_CreateWorldMenu::StartSharedLaunchFlow and checkStateAndStartGame.
+// Offline there are no sign in or online checks, only the start game warnings.
+void Host::createWorldStartSharedLaunchFlow() {
+    // Check if we need to upsell the texture pack
+    if (startGameTexturePackMissing()) return;
+    g_create_ignore_input = true;
+
+    // Only save the online setting if the user changed it - we may change it because we're offline, but don't want that saved
+    if (!g_start_options.bOnlineSettingChangedBySystem) {
+        mcle_settings_set(MCLE_SETTING_Online, g_start_options.bOnlineGame ? 1 : 0);
+    }
+    mcle_settings_set(MCLE_SETTING_InviteOnly, g_start_options.bInviteOnly ? 1 : 0);
+    mcle_settings_set(MCLE_SETTING_FriendsOfFriends, g_start_options.bAllowFriendsOfFriends ? 1 : 0);
+
+    if (g_create_game_mode_creative || g_start_options.bHostPrivileges) {
+        int textId = g_create_game_mode_creative ? IDS_CONFIRM_START_CREATIVE : IDS_CONFIRM_START_HOST_PRIVILEGES;
+        presentDialogWithTitle_content_buttons_focusIndex_callback(
+            MCLEStr(IDS_TITLE_START_GAME),
+            MCLEStr(textId),
+            { MCLEStr(IDS_CONFIRM_OK), MCLEStr(IDS_CONFIRM_CANCEL) },
+            0,
+            [this](MCLEDialogResult r) {
+                // ConfirmCreateReturned
+                if (r == MCLEDialogResultAccept) createWorldCreateGame();
+                else g_create_ignore_input = false;
+            });
+        return;
+    }
+    createWorldCreateGame();
+}
+
+// UIScene_CreateWorldMenu::CreateGame, the game side is mcle_game_create_world
+void Host::createWorldCreateGame() {
+    if (g_loading_world) return;
+    int difficulty = std::max(0, std::min((int)mcle_settings_get(MCLE_SETTING_Difficulty), 3));
+    std::wstring worldName = MCLEWideString(g_create_world_name);
+    navigateForwardTo("FullscreenProgress1080.swf");
+    if (mcle_game_create_world(g_start_options, worldName, g_create_game_mode_id, difficulty)) {
+        g_loading_world = true;
+    } else {
+        host::log("[createworld] mcle_game_create_world refused");
+    }
+}
+
+// UIScene_LaunchMoreOptionsMenu's checkboxes, by EControls id
+static const char* const kMoreOptionsCheckboxes[21] = {
+    "GameOptions.CheckboxOnline",               // eLaunchCheckbox_Online
+    "GameOptions.CheckboxInviteOnly",           // eLaunchCheckbox_InviteOnly
+    "GameOptions.CheckboxAllowFoF",             // eLaunchCheckbox_AllowFoF
+    "GameOptions.CheckboxPVP",                  // eLaunchCheckbox_PVP
+    "WorldOptions.CheckboxTrustSystem",         // eLaunchCheckbox_TrustSystem
+    "WorldOptions.CheckboxFireSpreads",         // eLaunchCheckbox_FireSpreads
+    "WorldOptions.CheckboxTNT",                 // eLaunchCheckbox_TNT
+    "GameOptions.CheckboxHostPrivileges",       // eLaunchCheckbox_HostPrivileges
+    "WorldOptions.CheckboxResetNether",         // eLaunchCheckbox_ResetNether
+    "WorldOptions.CheckboxStructures",          // eLaunchCheckbox_Structures
+    "WorldOptions.CheckboxFlatWorld",           // eLaunchCheckbox_FlatWorld
+    "WorldOptions.CheckboxBonusChest",          // eLaunchCheckbox_BonusChest
+    "WorldOptions.CheckboxDisableSaving",       // eLaunchCheckbox_DisableSaving
+    "WorldOptions.CheckboxResizeType",          // eLaunchCheckbox_WorldResizeType
+    "GameOptions.CheckboxKeepInventory",        // eLaunchCheckbox_KeepInventory
+    "GameOptions.CheckboxMobSpawning",          // eLaunchCheckbox_MobSpawning
+    "GameOptions.CheckboxMobLoot",              // eLaunchCheckbox_MobLoot
+    "GameOptions.CheckboxMobGriefing",          // eLaunchCheckbox_MobGriefing
+    "GameOptions.CheckboxTileDrops",            // eLaunchCheckbox_TileDrops
+    "GameOptions.CheckboxNaturalRegeneration",  // eLaunchCheckbox_NaturalRegeneration
+    "GameOptions.CheckboxDayLightCycle",        // eLaunchCheckbox_DayLightCycle
+};
+static const int kMoreOptionsEditSeed = 22;
+static const int kMoreOptionsWorldSize = 23;
+static const int kMoreOptionsWorldResize = 24;
+
+static const int kWorldSizeTitles[4] = {
+    IDS_WORLD_SIZE_TITLE_CLASSIC,
+    IDS_WORLD_SIZE_TITLE_SMALL,
+    IDS_WORLD_SIZE_TITLE_MEDIUM,
+    IDS_WORLD_SIZE_TITLE_LARGE,
+};
+
+static void MCLEMoreOptionsCheckbox(int box, const std::string& method, bool value) {
+    MCLECallPath(kMoreOptionsCheckboxes[box], method, { value });
+}
+
+static void MCLEMoreOptionsInitCheckbox(int box, int ids, bool checked) {
+    MCLECallPath(kMoreOptionsCheckboxes[box], "Init", { MCLEStr(ids), box, checked });
+}
+
+// UIScene_LaunchMoreOptionsMenu::UpdateCheats: the game rules that need host privileges
+static void MCLEMoreOptionsUpdateCheats(void) {
+    MCLELaunchMoreOptions& p = g_start_options;
+    bool cheatsOn = p.bHostPrivileges;
+
+    MCLEMoreOptionsCheckbox(14, "EnableCheckBox", cheatsOn);   // KeepInventory
+    MCLEMoreOptionsCheckbox(15, "EnableCheckBox", cheatsOn);   // MobSpawning
+    MCLEMoreOptionsCheckbox(17, "EnableCheckBox", cheatsOn);   // MobGriefing
+    MCLEMoreOptionsCheckbox(20, "EnableCheckBox", cheatsOn);   // DayLightCycle
+
+    if (!cheatsOn) {
+        // Set defaults
+        p.bMobGriefing = true;
+        p.bKeepInventory = false;
+        p.bDoMobSpawning = true;
+        p.bDoDaylightCycle = true;
+
+        MCLEMoreOptionsCheckbox(14, "SetCheckBox", p.bKeepInventory);
+        MCLEMoreOptionsCheckbox(15, "SetCheckBox", p.bDoMobSpawning);
+        MCLEMoreOptionsCheckbox(17, "SetCheckBox", p.bMobGriefing);
+        MCLEMoreOptionsCheckbox(20, "SetCheckBox", p.bDoDaylightCycle);
+    }
+}
+
+// UIScene_LaunchMoreOptionsMenu::UpdateOnline
+static void MCLEMoreOptionsUpdateOnline(void) {
+    bool bOnline = g_start_options.bOnlineGame;
+    MCLEMoreOptionsCheckbox(1, "EnableCheckBox", bOnline);   // InviteOnly
+    MCLEMoreOptionsCheckbox(2, "EnableCheckBox", bOnline);   // AllowFoF
+}
+
+// The active tab's description text, in eHTMLColor_White
+static void MCLEMoreOptionsSetDescription(int stringId) {
+    std::string text = host::format("<font color=\"#%08x\">%s", 0xffffffffu, MCLEStr(stringId).c_str());
+    MCLECallPath(g_more_options_tab == 0 ? "WorldOptions.Description_WorldOptions"
+                                         : "GameOptions.Description_GameOptions",
+                 "SetLabel", { text });
+}
+
+// UIScene_LaunchMoreOptionsMenu::updateTooltips: LB shows without text, RB names the other tab
+static void MCLEMoreOptionsTooltips(void) {
+    int changeTabTooltip = g_more_options_tab == 1 ? IDS_WORLD_OPTIONS : IDS_GAME_OPTIONS;
+    int ids[11] = { IDS_TOOLTIPS_SELECT, IDS_TOOLTIPS_BACK, -1, -1, -1, -1, -2, changeTabTooltip, -1, -1, -1 };
+    MCLESetTooltips(ids);
+}
+
+// UIScene_LaunchMoreOptionsMenu::handleInput, LB or RB
+static void MCLEMoreOptionsChangeTab(void) {
+    // Toggle tab index
+    g_more_options_tab = g_more_options_tab == 0 ? 1 : 0;
+    MCLEMoreOptionsTooltips();
+    MCLECallPath("", "ChangeTab", {});
+}
+
+// UIScene_LaunchMoreOptionsMenu constructor, on the params of the
+// CreateWorldMenu or LoadMenu that opened it. Coming back from the keyboard
+// it's reloadMovie, on the same params.
+void Host::initMoreOptionsMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    attachMenuScenery();
+    MCLELaunchMoreOptions& p = g_start_options;
+    g_more_options_ignore_input = false;
+
+    MCLECallPath("LabelWorld", "Init", { MCLEStr(IDS_WORLD_OPTIONS) });
+
+    // don't show the increase world size stuff if we're already large, or the size is unknown
+    bool showResize = p.currentWorldSize == 1 || p.currentWorldSize == 2 || p.currentWorldSize == 3;
+    MCLECallPath("", "SetMenuType", { p.bGenerateOptions ? 0 : 1, showResize });
+
+    bool bOnlineGame = p.bOnlineGame;
+    bool bInviteOnly = p.bInviteOnly;
+    bool bAllowFriendsOfFriends = p.bAllowFriendsOfFriends;
+
+    // Not signed in to an online service, so multiplayer isn't allowed
+    MCLEMoreOptionsCheckbox(0, "EnableCheckBox", false);
+    if (p.bOnlineSettingChangedBySystem) {
+        MCLEMoreOptionsCheckbox(0, "EnableCheckBox", false);
+        MCLEMoreOptionsCheckbox(1, "EnableCheckBox", false);
+        MCLEMoreOptionsCheckbox(2, "EnableCheckBox", false);
+        bOnlineGame = bInviteOnly = bAllowFriendsOfFriends = false;
+    } else if (!p.bOnlineGame) {
+        MCLEMoreOptionsCheckbox(1, "EnableCheckBox", false);
+        MCLEMoreOptionsCheckbox(2, "EnableCheckBox", false);
+    }
+
+    MCLEMoreOptionsUpdateCheats();
+
+    MCLEMoreOptionsInitCheckbox(0, IDS_ONLINE_GAME, bOnlineGame);
+    MCLEMoreOptionsInitCheckbox(1, IDS_INVITE_ONLY, bInviteOnly);
+    MCLEMoreOptionsInitCheckbox(2, IDS_ALLOWFRIENDSOFFRIENDS, bAllowFriendsOfFriends);
+    MCLEMoreOptionsInitCheckbox(3, IDS_PLAYER_VS_PLAYER, p.bPVP);
+    MCLEMoreOptionsInitCheckbox(4, IDS_TRUST_PLAYERS, p.bTrust);
+    MCLEMoreOptionsInitCheckbox(5, IDS_FIRE_SPREADS, p.bFireSpreads);
+    MCLEMoreOptionsInitCheckbox(6, IDS_TNT_EXPLODES, p.bTNT);
+    MCLEMoreOptionsInitCheckbox(7, IDS_HOST_PRIVILEGES, p.bHostPrivileges);
+    MCLEMoreOptionsInitCheckbox(8, IDS_RESET_NETHER, p.bResetNether);
+    MCLEMoreOptionsInitCheckbox(9, IDS_GENERATE_STRUCTURES, p.bStructures);
+    MCLEMoreOptionsInitCheckbox(10, IDS_SUPERFLAT_WORLD, p.bFlatWorld);
+    MCLEMoreOptionsInitCheckbox(11, IDS_BONUS_CHEST, p.bBonusChest);
+
+    MCLEMoreOptionsInitCheckbox(14, IDS_KEEP_INVENTORY, p.bKeepInventory);
+    MCLEMoreOptionsInitCheckbox(15, IDS_MOB_SPAWNING, p.bDoMobSpawning);
+    MCLEMoreOptionsInitCheckbox(16, IDS_MOB_LOOT, p.bDoMobLoot);
+    MCLEMoreOptionsInitCheckbox(17, IDS_MOB_GRIEFING, p.bMobGriefing);
+    MCLEMoreOptionsInitCheckbox(18, IDS_TILE_DROPS, p.bDoTileDrops);
+    MCLEMoreOptionsInitCheckbox(19, IDS_NATURAL_REGEN, p.bNaturalRegeneration);
+    MCLEMoreOptionsInitCheckbox(20, IDS_DAYLIGHT_CYCLE, p.bDoDaylightCycle);
+
+    MCLECallPath("LabelGame", "Init", { MCLEStr(IDS_GAME_OPTIONS) });
+    MCLECallPath("WorldOptions.Seed", "Init", { MCLEStr(IDS_CREATE_NEW_WORLD_SEED) });
+    MCLECallPath("WorldOptions.RandomSeed", "Init", { MCLEStr(IDS_CREATE_NEW_WORLD_RANDOM_SEED) });
+    MCLECallPath("WorldOptions.EditSeed", "Init", { MCLEStringFromUTF16(p.seed), kMoreOptionsEditSeed });
+
+    int worldSize = std::max(0, std::min(p.worldSize, 3));
+    MCLECallPath("WorldOptions.WorldSize", "Init", { MCLEStr(IDS_WORLD_SIZE) });
+    MCLECallPath("WorldOptions.WorldSizeSlider", "Init",
+                 { MCLEStr(kWorldSizeTitles[worldSize]), kMoreOptionsWorldSize, 0, 3, worldSize });
+
+    MCLEMoreOptionsInitCheckbox(12, IDS_DISABLE_SAVING, p.bDisableSaving);
+
+    if (p.currentWorldSize != 0) {
+        MCLECallPath("WorldOptions.ResizeLabel", "Init", { MCLEStr(IDS_INCREASE_WORLD_SIZE) });
+        int min = p.currentWorldSize - 1;
+        int curr = std::max(0, std::min(p.newWorldSize - 1, 3));
+        MCLECallPath("WorldOptions.ChangeWorldSizeSlider", "Init",
+                     { MCLEStr(kWorldSizeTitles[curr]), kMoreOptionsWorldResize, min, 3, curr });
+        MCLEMoreOptionsInitCheckbox(13, IDS_INCREASE_WORLD_SIZE_OVERWRITE_EDGES, p.newWorldSizeOverwriteEdges);
+    }
+
+    g_more_options_tab = p.bGenerateOptions ? 0 : 1;
+    // set the default text
+    MCLEMoreOptionsSetDescription(p.bGenerateOptions ? IDS_GAMEOPTION_SEED : IDS_GAMEOPTION_ONLINE);
+
+    // UIScene::reloadMovie coming back from the keyboard puts the focus back
+    // on the seed it was for
+    if (g_menu_reloading) ruffle_ios_call_root_set_focus(g_ruffle_player, kMoreOptionsEditSeed);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// UIScene_LaunchMoreOptionsMenu::handleCheckboxToggled
+void Host::moreOptionsCheckbox_checked(int controlId, bool selected) {
+    // A box that hasn't had its Init yet
+    if (controlId < 0) return;
+    mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+    MCLELaunchMoreOptions& p = g_start_options;
+    switch (controlId) {
+        case 0:  p.bOnlineGame = selected; MCLEMoreOptionsUpdateOnline(); break;
+        case 1:  p.bInviteOnly = selected; break;
+        case 2:  p.bAllowFriendsOfFriends = selected; break;
+        case 3:  p.bPVP = selected; break;
+        case 4:  p.bTrust = selected; break;
+        case 5:  p.bFireSpreads = selected; break;
+        case 6:  p.bTNT = selected; break;
+        case 7:  p.bHostPrivileges = selected; MCLEMoreOptionsUpdateCheats(); break;
+        case 8:  p.bResetNether = selected; break;
+        case 9:  p.bStructures = selected; break;
+        case 10: p.bFlatWorld = selected; break;
+        case 11: p.bBonusChest = selected; break;
+        case 12: p.bDisableSaving = selected; break;
+        case 13: p.newWorldSizeOverwriteEdges = selected; break;
+        case 14: p.bKeepInventory = selected; break;
+        case 15: p.bDoMobSpawning = selected; break;
+        // upstream's MobLoot case has no break and carries on into MobGriefing
+        case 16: p.bDoMobLoot = selected; p.bMobGriefing = selected; break;
+        case 17: p.bMobGriefing = selected; break;
+        case 18: p.bDoTileDrops = selected; break;
+        case 19: p.bNaturalRegeneration = selected; break;
+        case 20: p.bDoDaylightCycle = selected; break;
+        default: break;
+    }
+}
+
+// UIScene_LaunchMoreOptionsMenu::handleFocusChange: the focused option's description
+void Host::moreOptionsFocus(int controlId) {
+    static const int kDescriptions[25] = {
+        IDS_GAMEOPTION_ONLINE, IDS_GAMEOPTION_INVITEONLY, IDS_GAMEOPTION_ALLOWFOF, IDS_GAMEOPTION_PVP,
+        IDS_GAMEOPTION_TRUST, IDS_GAMEOPTION_FIRE_SPREADS, IDS_GAMEOPTION_TNT_EXPLODES,
+        IDS_GAMEOPTION_HOST_PRIVILEGES, IDS_GAMEOPTION_RESET_NETHER, IDS_GAMEOPTION_STRUCTURES,
+        IDS_GAMEOPTION_SUPERFLAT, IDS_GAMEOPTION_BONUS_CHEST, IDS_GAMEOPTION_DISABLE_SAVING,
+        IDS_GAMEOPTION_INCREASE_WORLD_SIZE_OVERWRITE_EDGES, IDS_GAMEOPTION_KEEP_INVENTORY,
+        IDS_GAMEOPTION_MOB_SPAWNING, IDS_GAMEOPTION_MOB_LOOT, IDS_GAMEOPTION_MOB_GRIEFING,
+        IDS_GAMEOPTION_TILE_DROPS, IDS_GAMEOPTION_NATURAL_REGEN, IDS_GAMEOPTION_DAYLIGHT_CYCLE,
+        0, IDS_GAMEOPTION_SEED, IDS_GAMEOPTION_WORLD_SIZE, IDS_GAMEOPTION_INCREASE_WORLD_SIZE,
+    };
+    int stringId = (controlId >= 0 && controlId < 25) ? kDescriptions[controlId] : 0;
+    MCLEMoreOptionsSetDescription(stringId);
+}
+
+// UIScene_LaunchMoreOptionsMenu::handleSliderMove
+void Host::moreOptionsSlider_value(int sliderId, int value) {
+    if (value < 0 || value > 3) return;
+    // UIControl_Slider::handleSliderMove makes the sound when the value moved
+    if (sliderId == kMoreOptionsWorldSize) {
+        if (g_start_options.worldSize != value) MCLEPlayUISFX("scroll");
+        g_start_options.worldSize = value;
+        MCLECallPath("WorldOptions.WorldSizeSlider", "SetLabel", { MCLEStr(kWorldSizeTitles[value]) });
+    } else if (sliderId == kMoreOptionsWorldResize) {
+        if (value + 1 >= g_start_options.currentWorldSize) {
+            if (g_start_options.newWorldSize != value + 1) MCLEPlayUISFX("scroll");
+            g_start_options.newWorldSize = value + 1;
+            MCLECallPath("WorldOptions.ChangeWorldSizeSlider", "SetLabel", { MCLEStr(kWorldSizeTitles[value]) });
+        }
+    }
+}
+
+// UIScene_LaunchMoreOptionsMenu::KeyboardCompleteSeedCallback. The menu's
+// movie reloads once the keyboard has gone, and the seed's label comes from
+// m_params->seed there.
+static int MCLEMoreOptionsKeyboardComplete(void* lpParam, const bool bRes) {
+    g_more_options_ignore_input = false;
+    if (bRes) {
+        // Win64_GetKeyboardText
+        g_start_options.seed = MCLEWideUTF16(MCLEStringFromWide(mcle_keyboard_text()));
+    }
+    return 0;
+}
+
+// UIScene_LaunchMoreOptionsMenu::handlePress, the seed's keyboard
+void Host::moreOptionsPress(int controlId) {
+    if (g_more_options_ignore_input || controlId != kMoreOptionsEditSeed) return;
+    // Windows64 without the keyboard and mouse: UIScene_Keyboard
+    g_more_options_ignore_input = true;
+    MCLEKeyboardInitData kbData;
+    kbData.title = MCLEWideString(MCLEStr(IDS_CREATE_NEW_WORLD_SEED));
+    if (!MCLELabelAt("WorldOptions.EditSeed", &kbData.defaultText)) {
+        kbData.defaultText = MCLEWideString(MCLEStringFromUTF16(g_start_options.seed));
+    }
+    kbData.maxChars = 60;
+    kbData.callback = &MCLEMoreOptionsKeyboardComplete;
+    navigateToKeyboard(kbData);
+}
+
+static int g_progress_stage = -2;
+static int g_progress_pct = -1;
+// UIScene_FullscreenProgress's m_lastTitle and m_lastStatus
+static int g_progress_title = -1;
+static int g_progress_status = -1;
+static double g_progress_tip_time = 0;
+
+// UIControl_Progress::setProgress. The scene's bar runs from 0 to 100 and
+// the movie wants how far along it is from 0 to 1, a percent sent as it
+// is fills the bar at 1%.
+static void MCLEFullscreenProgressSetBar(int current) {
+    const int barMin = 0, barMax = 100;
+    const double percent = (double)(current - barMin) / (barMax - barMin);
+    MCLECallPath("ProgressBar", "setProgress", { percent });
+}
+
+static std::string MCLETipHTML(void) {
+    // FullscreenProgress puts each tip through FormatHTMLString, for the
+    // buttons some of them name, and wraps it like this (eHTMLColor_White)
+    const std::wstring tip = mcle_format_html_string(0, MCLEWideString(MCLEStr(MCLENextTip())));
+    return host::format("<font color=\"#ffffffff\"><p align=center>%s</p>",
+            MCLEStringFromWide(tip).c_str());
+}
+
+// UIScene_FullscreenProgress::handleTimerComplete, the next tip every
+// TIMER_FULLSCREEN_TIPS_TIME
+static const double kProgressTipTime = 7.0;
+static void MCLEProgressTipTick(void) {
+    double now = host::now();
+    if (now - g_progress_tip_time >= kProgressTipTime) {
+        g_progress_tip_time = now;
+        MCLECallPath("Tip", "SetLabel", { MCLETipHTML() });
+    }
+}
+
+// Longer Loading Screens: the screen stays up until two tips have shown.
+// What's ready by then waits under it with the game paused, so nothing
+// ticks that the player can't see.
+static double g_loading_hold_start = 0;
+static bool g_loading_hold_paused = false;
+
+static bool MCLELoadingHeld(void) {
+    return mcle_settings_get_longer_loading() &&
+           host::now() - g_loading_hold_start < 2 * kProgressTipTime;
+}
+
+static void MCLELoadingHoldPause(bool paused) {
+    if (!paused && !g_loading_hold_paused) return;
+    g_loading_hold_paused = paused;
+    mcle_game_set_paused(paused ? 1 : 0);
+}
+
+// UIScene_FullscreenProgress constructor
+void Host::initFullscreenProgress() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    attachMenuScenery();
+    // m_controlTimer.setVisible(false): the spinner is only for
+    // ConnectingProgress, here it would sit over the bar
+    MCLESetPathVisible("Timer", false);
+    MCLECallPath("Confirm", "Init", { MCLEStr(IDS_CONFIRM_OK), 0 });
+    MCLESetPathVisible("Confirm", false);
+    MCLECallPath("ProgressBar", "Init", { "" });
+    MCLECallPath("Tip", "Init", { MCLETipHTML() });
+    MCLECallPath("Title", "Init", { "" });
+    MCLESetPathVisible("Tip", true);
+    g_progress_stage = -2;
+    g_progress_pct = -1;
+    g_progress_tip_time = host::now();
+    g_loading_hold_start = g_progress_tip_time;
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// FullscreenProgress completes with e_ProgressCompletion_CloseAllPlayersUIScenes,
+// and the panorama, logo and menu background components hide once the game
+// has started.
+// UIScene_PauseMenu. Opening it pauses the single player game.
+void Host::openPauseMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    g_world_paused = true;
+    mcle_game_set_paused(1);
+    // NavigateToScene's SetMenuDisplayed, the pad drives the menu now
+    mcle_game_set_menu_displayed(true);
+    // UIScene_PauseMenu: the tutorial popup stays hidden while it's up
+    mcle_tutorial_show_popup(false);
+    menuStack.clear();
+    transitionToMenuNamed("PauseMenu1080.swf");
+}
+
+void Host::initPauseMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    std::vector<MenuButton> cfg = {
+        { "Button1", MCLEStr(IDS_RESUME_GAME),      0 },
+        { "Button2", MCLEStr(IDS_HELP_AND_OPTIONS), 1 },
+        { "Button3", MCLEStr(IDS_LEADERBOARDS),     2 },
+        { "Button4", MCLEStr(IDS_ACHIEVEMENTS),     3 },
+        { "Button5", MCLEStr(IDS_SAVE_GAME),        4 },
+        { "Button6", MCLEStr(IDS_EXIT_GAME),        5 },
+    };
+    applyMenuButtonConfig(cfg);
+    // updateComponents: no panorama, menu background and logo on
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, -2, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kLogoDepth, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+}
+
+// The calls a container scene queued, made on the movie
+static void MCLEContainerApplyOps(void) {
+    extern PlayerHandle* g_ruffle_player;
+    for (const MCLEUIOp& op : mcle_container_take_ops()) {
+        if (op.kind == MCLEUIOp::Sound) {
+            float pitch = op.args.empty() ? 1.0f : static_cast<float>(op.args[0].number);
+            mcle_audio_play_ui_sfx(op.method.c_str(), 1.0f, pitch);
+            continue;
+        }
+        if (op.kind == MCLEUIOp::Key) {
+            if (g_ruffle_player && op.args.size() == 2) {
+                ruffle_ios_player_key(g_ruffle_player, static_cast<int>(op.args[0].number), op.args[1].number != 0);
+            }
+            continue;
+        }
+        if (op.kind == MCLEUIOp::AnimateKey) {
+            if (op.args.size() == 1) MCLEAnimateKeyPress(static_cast<int>(op.args[0].number));
+            continue;
+        }
+        if (op.kind == MCLEUIOp::Visible) {
+            if (op.args.size() == 1) {
+                MCLESetPathVisible(std::string(op.path.c_str()), op.args[0].number != 0);
+            }
+            continue;
+        }
+        host::Args args;
+        args.reserve(op.args.size());
+        for (const MCLEUIArg& a : op.args) {
+            if (a.kind == MCLEUIArg::String) {
+                std::string s = std::string(a.str.c_str());
+                args.push_back(s);
+            } else if (a.kind == MCLEUIArg::Bool) {
+                args.push_back(a.number != 0 ? true : false);
+            } else {
+                args.push_back(a.number);
+            }
+        }
+        MCLECallPath(std::string(op.path.c_str()),
+                     std::string(op.method.c_str()), args);
+    }
+}
+
+// The calls the tutorial popup queued, made on its own movie
+static void MCLETutorialPopupApplyOps(void) {
+    extern PlayerHandle* g_ruffle_player;
+    std::vector<MCLEUIOp> ops = mcle_tutorial_popup_take_ops();
+    if (!g_ruffle_player) return;
+    for (const MCLEUIOp& op : ops) {
+        if (op.kind == MCLEUIOp::Visible) {
+            if (op.args.size() == 1) {
+                ruffle_ios_set_sibling_path_visible(g_ruffle_player, kTutorialPopupDepth,
+                    (const uint8_t*)op.path.c_str(), op.path.size(), op.args[0].number != 0 ? 1 : 0);
+            }
+            continue;
+        }
+        if (op.kind != MCLEUIOp::Call) continue;
+        size_t n = op.args.size();
+        std::vector<int> kinds(n);
+        std::vector<double> nums(n);
+        std::vector<const uint8_t*> strs(n);
+        std::vector<size_t> lens(n);
+        for (size_t i = 0; i < n; ++i) {
+            const MCLEUIArg& a = op.args[i];
+            kinds[i] = a.kind == MCLEUIArg::String ? 2 : (a.kind == MCLEUIArg::Bool ? 1 : 0);
+            nums[i] = a.number;
+            strs[i] = (const uint8_t*)a.str.c_str();
+            lens[i] = a.str.size();
+        }
+        ruffle_ios_call_sibling_path(g_ruffle_player, kTutorialPopupDepth,
+            (const uint8_t*)op.path.c_str(), op.path.size(),
+            (const uint8_t*)op.method.c_str(), op.method.size(),
+            kinds.data(), nums.data(), strs.data(), lens.data(), n);
+    }
+}
+
+// UIComponent_TutorialPopup for this frame: its timers, its calls, and the
+// layer's visible flag for it. Only shown over the HUD and the menus in game.
+static bool g_tutorial_popup_shown = false;
+static void MCLETutorialPopupFrame(bool inGame) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    if (inGame) mcle_tutorial_popup_tick();
+    MCLETutorialPopupApplyOps();
+    bool shown = inGame && mcle_tutorial_popup_is_visible();
+    if (shown != g_tutorial_popup_shown) {
+        g_tutorial_popup_shown = shown;
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTutorialPopupDepth, shown ? 1 : 0);
+    }
+}
+
+// The popup's movie loaded again: shown as it was, then its reloadMovie
+static void MCLETutorialPopupMovieReloaded(void) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTutorialPopupDepth,
+                                                g_tutorial_popup_shown ? 1 : 0);
+    mcle_tutorial_popup_movie_reloaded();
+    MCLETutorialPopupApplyOps();
+}
+
+// The popup's iggy_ regions after the movie has drawn, for its customDraw
+static void MCLETutorialPopupRegions(void) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    RuffleIosCustomDrawRegion regions[4];
+    int n = g_tutorial_popup_shown
+        ? ruffle_ios_sibling_custom_draw_regions(g_ruffle_player, kTutorialPopupDepth, regions, 4)
+        : 0;
+    n = std::max(0, std::min(n, 4));
+    mcle_tutorial_popup_set_regions(reinterpret_cast<const MCLECustomDrawRegion*>(regions), n);
+}
+
+// UIControl's x, y, width and height for a control, read when the scene maps it
+static MCLEControlRect MCLEControlRectAt(const char* path) {
+    extern PlayerHandle* g_ruffle_player;
+    float r[4] = { 0, 0, 0, 0 };
+    if (g_ruffle_player) ruffle_ios_child_path_rect(g_ruffle_player, (const uint8_t*)path, strlen(path), r);
+    return MCLEControlRect{ r[0], r[1], r[2], r[3] };
+}
+
+// UIControl_Base::getLabel, GetLabel on the control. Iggy would have made
+// the calls the scene queued before it already, so they go first.
+static bool MCLELabelAt(const char* path, std::wstring* label) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return false;
+    MCLEContainerApplyOps();
+    char text[1024];
+    int n = ruffle_ios_call_child_path_string(g_ruffle_player, (const uint8_t*)path, strlen(path),
+                                              (const uint8_t*)"GetLabel", 8, (uint8_t*)text, sizeof(text));
+    if (n < 0) return false;
+    std::string s(text, (size_t)n);
+    *label = MCLEWideString(s);
+    return true;
+}
+
+// Minecraft::tick's inventory action: app.LoadInventoryMenu
+void Host::openInventoryMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player || !mcle_container_can_open_inventory()) return;
+    menuStack.clear();
+    transitionToMenuNamed("InventoryMenu1080.swf");
+    showContainerOverWorld();
+}
+
+// Minecraft::tick's crafting action (app.LoadCrafting2x2Menu), or
+// LocalPlayer::startCrafting for the server's crafting table
+void Host::openCraftingMenu(bool table) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) {
+        if (table) mcle_container_open_failed();
+        return;
+    }
+    menuStack.clear();
+    transitionToMenuNamed(table ? "Crafting3x3Menu1080.swf" : "Crafting2x2Menu1080.swf");
+    if (!mcle_container_is_open() && table) mcle_container_open_failed();
+    showContainerOverWorld();
+}
+
+// The scene the movie just went up for, or back to the HUD if it didn't open
+void Host::showContainerOverWorld() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!mcle_container_is_open()) {
+        enterWorldUI();
+        return;
+    }
+    g_world_container = true;
+    // The container scenes don't change the components, so it's the world
+    // under it like the HUD had, with the menu background if the scene
+    // added it. The tooltips show while a menu is up.
+    const int depths[] = { -2, kMenuBackgroundDepth, kLogoDepth, kDimDepth };
+    for (int d : depths) ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, d, 0);
+    if (mcle_container_menu_background()) {
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 1);
+    }
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+    MCLEGameTooltipsReset();
+}
+
+// ClientConnection::handleTileEditorOpen's LocalPlayer::openTextEdit:
+// app.LoadSignEntryMenu
+void Host::openSignEntryMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    menuStack.clear();
+    transitionToMenuNamed("SignEntryMenu1080.swf");
+    showContainerOverWorld();
+}
+
+// UIScene_SignEntryMenu's constructor once its movie is up, or its
+// reloadMovie coming back from the keyboard
+void Host::initSignEntryMenu() {
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    if (g_container_reloading) mcle_container_reload();
+    else mcle_sign_entry_open();
+    MCLEContainerApplyOps();
+}
+
+// Minecraft::tick's game info action: UIScene_InGameInfoMenu over the
+// running world, which goes on ticking under it
+void Host::openInGameInfoMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    menuStack.clear();
+    transitionToMenuNamed("InGameInfoMenu1080.swf");
+    showContainerOverWorld();
+    g_world_info = mcle_container_is_open();
+}
+
+// UIScene_InGameInfoMenu's constructor once its movie is up, or its
+// reloadMovie coming back from the host or player options
+void Host::initInGameInfoMenu() {
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    if (g_container_reloading) mcle_container_reload();
+    else mcle_ingame_info_open();
+    MCLEContainerApplyOps();
+}
+
+// UIScene_InGameHostOptionsMenu's or UIScene_InGamePlayerOptionsMenu's
+// constructor, over the info menu that navigated to it
+void Host::initInGameOptionsMenu() {
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    mcle_container_open_navigated();
+    MCLEContainerApplyOps();
+}
+
+// UIScene_Keyboard's constructor, over the scene that navigated to it
+void Host::initKeyboardMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    if (mcle_keyboard_front_end_open()) {
+        // parentLayer->addComponent(eUIComponent_MenuBackground)
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 1);
+    } else {
+        mcle_container_open_navigated();
+    }
+    MCLEContainerApplyOps();
+}
+
+// ui.NavigateToScene(iPad, eUIScene_Keyboard, &kbData) from a front end
+// menu: the keyboard goes on the menu stack over it
+void Host::navigateToKeyboard(const MCLEKeyboardInitData& kbData) {
+    size_t depth = menuStack.size();
+    mcle_keyboard_front_end_navigate_to(0, kbData);
+    navigateForwardTo("Keyboard1080.swf");
+    // Its movie never came up, the menu is still the one up
+    if (!mcle_keyboard_front_end_is_open()) {
+        while (menuStack.size() > depth) menuStack.pop_back();
+    }
+    mcle_keyboard_front_end_navigate_done();
+}
+
+// ~UIScene_Keyboard over a front end menu, and the menu background it added
+void Host::closeFrontEndKeyboard() {
+    extern PlayerHandle* g_ruffle_player;
+    mcle_keyboard_front_end_close();
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 0);
+}
+
+// A UI frame of the keyboard over a front end menu: the pad
+// (UIController::handleInput) and the scene's tick, then the movie. Its
+// navigateBack puts the menu's movie back up for its reloadMovie.
+void Host::frontEndKeyboardFrame() {
+    extern PlayerHandle* g_ruffle_player;
+    if (mcle_game_console_frame()) {
+        mcle_ios_pad_state pad = {};
+        mcle_ios_input_poll(0, &pad);
+        mcle_keyboard_front_end_frame(pad.buttons, lastPadButtons, host::now());
+        lastPadButtons = pad.buttons;
+    }
+    MCLEContainerApplyOps();
+    if (mcle_keyboard_front_end_close_requested()) {
+        closeFrontEndKeyboard();
+        g_menu_reloading = true;
+        navigateBack();
+        g_menu_reloading = false;
+        return;
+    }
+    int tips[11];
+    mcle_container_tooltips(tips);
+    MCLESetTooltips(tips);
+    ruffle_ios_player_tick(g_ruffle_player, g_frame_seconds);
+}
+
+// UIController::NavigateToScene from the scene that's up: the new scene's
+// movie takes the place of that one's
+void Host::containerNavigateTo(const std::string& movie) {
+    transitionToMenuNamed(movie);
+    mcle_container_navigate_done();
+    showContainerOverWorld();
+}
+
+// A navigateBack to the scene under the one that's up: its movie goes back
+// up for its reloadMovie
+void Host::containerNavigateBack() {
+    const char* backMovie = mcle_container_back_movie();
+    std::string movie = std::string(backMovie ? backMovie : "");
+    mcle_container_navigate_back();
+    MCLEContainerApplyOps();
+    g_container_reloading = true;
+    transitionToMenuNamed(movie);
+    g_container_reloading = false;
+    showContainerOverWorld();
+}
+
+// UIScene_CraftingMenu's constructor, once the movie is up
+void Host::initCraftingMenu(bool table) {
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    mcle_container_open_crafting(table);
+    MCLEContainerApplyOps();
+}
+
+// LocalPlayer's open for a container the server opened (openContainer and
+// the rest), from handleContainerOpen
+void Host::openServerContainer() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) {
+        mcle_container_open_failed();
+        return;
+    }
+    mcle_container_set_rect_reader(MCLEControlRectAt);
+    menuStack.clear();
+    const char* serverMovie = mcle_container_server_movie();
+    transitionToMenuNamed(std::string(serverMovie ? serverMovie : ""));
+    if (!mcle_container_is_open()) mcle_container_open_failed();
+    showContainerOverWorld();
+}
+
+// The server container's scene, once its movie is up, or its reloadMovie
+// coming back from the keyboard
+void Host::initServerContainer() {
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    if (g_container_reloading) mcle_container_reload();
+    else mcle_container_open_server();
+    MCLEContainerApplyOps();
+}
+
+// Minecraft::tick's crafting action in creative: app.LoadCreativeMenu
+void Host::openCreativeMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    menuStack.clear();
+    transitionToMenuNamed("CreativeMenu1080.swf");
+    showContainerOverWorld();
+}
+
+// UIScene_CreativeMenu's constructor, once the movie is up
+void Host::initCreativeMenu() {
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    MCLECreativeLayout layout;
+    layout.backgroundPanel = MCLEControlRectAt("MainPanel.BackgroundPanel");
+    layout.containerList = MCLEControlRectAt("MainPanel.containerList");
+    layout.hotbarList = MCLEControlRectAt("MainPanel.hotbarList");
+    for (int i = 0; i < 8; ++i) {
+        char path[32];
+        snprintf(path, sizeof(path), "MainPanel.TouchPanel_%d", i);
+        layout.tabs[i] = MCLEControlRectAt(path);
+    }
+    layout.slider = MCLEControlRectAt("MainPanel.TouchPanel_Slider");
+    mcle_container_open_creative(layout);
+    MCLEContainerApplyOps();
+}
+
+// UIScene_InventoryMenu's constructor, once the movie is up
+void Host::initInventoryMenu() {
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+    MCLEInventoryLayout layout;
+    layout.backgroundPanel = MCLEControlRectAt("MainPanel.BackgroundPanel");
+    layout.hotbarList = MCLEControlRectAt("MainPanel.hotbarList");
+    layout.inventoryList = MCLEControlRectAt("MainPanel.inventoryList");
+    layout.armorList = MCLEControlRectAt("MainPanel.armorList");
+    layout.player = MCLEControlRectAt("MainPanel.iggy_player");
+    mcle_container_open_inventory(layout, host::now());
+    MCLEContainerApplyOps();
+}
+
+// UIScene_AbstractContainerMenu's cursor is over the slots, with the item
+// it carries under its pointer and text. The slot items are drawn on a layer
+// over the movie, so the cursor goes on the one over that.
+static void MCLESetContainerCursorOnTop(bool on) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    static const char kCursor[] = "MainPanel.cursor";
+    ruffle_ios_set_overlay_path(g_ruffle_player, (const uint8_t*)kCursor, on ? strlen(kCursor) : 0);
+}
+
+// handleDestroy, back to the HUD unless another scene is taking over
+void Host::closeContainerMenu(bool backToGame) {
+    mcle_container_close();
+    MCLEContainerApplyOps();
+    g_world_container = false;
+    MCLESetContainerCursorOnTop(false);
+    g_world_info = false;
+    if (backToGame) enterWorldUI();
+}
+
+// A UI frame of the container scene: the pad, UIScene::tick, then the
+// mouse move the pointer makes and the movie with its slots drawn in
+void Host::containerMenuFrame() {
+    extern PlayerHandle* g_ruffle_player;
+    // UIController::tick is once a frame of the original's
+    if (mcle_game_console_frame()) {
+        mcle_ios_pad_state pad = {};
+        mcle_ios_input_poll(0, &pad);
+        mcle_container_frame(pad.buttons, lastPadButtons, host::now());
+        lastPadButtons = pad.buttons;
+    }
+    MCLEContainerApplyOps();
+    if (mcle_container_close_requested()) {
+        if (mcle_container_back_movie()) containerNavigateBack();
+        else closeContainerMenu(true);
+        return;
+    }
+    if (const char* movie = mcle_container_take_navigate()) {
+        containerNavigateTo(std::string(movie));
+        return;
+    }
+    int tips[11];
+    mcle_container_tooltips(tips);
+    MCLESetTooltips(tips);
+    // The tutorial popup over the menu, and the slide its timers ask the
+    // menu for
+    MCLETutorialPopupFrame(true);
+    MCLEContainerApplyOps();
+    if (!g_ruffle_player) return;
+    float px = 0, py = 0;
+    if (mcle_container_pointer(&px, &py)) ruffle_ios_player_mouse_move_stage(g_ruffle_player, px, py);
+    MCLESetContainerCursorOnTop(true);
+    ruffle_ios_player_tick(g_ruffle_player, g_frame_seconds);
+    // The crafting menus have around 70 slots
+    RuffleIosCustomDrawRegion regions[128];
+    int n = ruffle_ios_custom_draw_regions(g_ruffle_player, regions, 128);
+    n = std::max(0, std::min(n, 128));
+    MCLETutorialPopupRegions();
+    mcle_container_custom_draw(reinterpret_cast<const MCLECustomDrawRegion*>(regions), n);
+}
+
+// UIScene_DeathMenu: Respawn and Exit Game under "You died!"
+void Host::openDeathMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    // Dying closes whatever menu was up
+    if (g_world_container) closeContainerMenu(false);
+    g_world_dead = true;
+    // The death menu is a menu to the game and the tutorial, and the
+    // tutorial popup stays hidden while it's up
+    mcle_game_set_menu_displayed(true);
+    mcle_tutorial_show_popup(false);
+    menuStack.clear();
+    transitionToMenuNamed("DeathMenu1080.swf");
+}
+
+void Host::initDeathMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    std::vector<MenuButton> cfg = {
+        { "Respawn",  MCLEStr(IDS_RESPAWN),   0 },
+        { "ExitGame", MCLEStr(IDS_EXIT_GAME), 1 },
+    };
+    applyMenuButtonConfig(cfg);
+    MCLECallPath("Title", "SetLabel", { MCLEStr(IDS_YOU_DIED) });
+    // UIScene_DeathMenu adds no components: the game shows behind it as it is
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, -2, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+}
+
+// Longer Loading Screens on a level change's ConnectingProgress, which
+// hides the tips in TU19: here it shows them like FullscreenProgress and
+// is held from when the change started
+static bool g_connecting_hold = false;
+static void MCLEConnectingHoldStart(void) {
+    if (g_connecting_hold || !mcle_settings_get_longer_loading()) return;
+    g_connecting_hold = true;
+    g_progress_tip_time = host::now();
+    g_loading_hold_start = g_progress_tip_time;
+    MCLESetPathVisible("Tip", true);
+}
+
+// ClientConnection::handleRespawn going to another dimension, and
+// eAppAction_Respawn: UIScene_ConnectingProgress over the game, the
+// FullscreenProgress movie with the panorama and logo and only the title
+void Host::openConnectingProgress_respawn(int stringId, bool respawn) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    std::string title = stringId >= 0 ? MCLEStr(stringId) : "";
+    if (respawn) {
+        g_connecting_respawn = true;
+        g_respawns_seen = mcle_game_respawns();
+    }
+    if (g_world_connecting) {
+        // The scene it navigates to over the last one only has a new title
+        MCLECallPath("Title", "SetLabel", { title });
+        if (!respawn) MCLEConnectingHoldStart();
+        return;
+    }
+    // 4J Stu - Fix for #13543 - Crash: Game crashes if entering a portal with the inventory menu open
+    if (g_world_container) closeContainerMenu(false);
+    g_world_connecting = true;
+    mcle_game_set_menu_displayed(true);
+    if (!respawn) mcle_tutorial_show_popup(false);
+    menuStack.clear();
+    transitionToMenuNamed("FullscreenProgress1080.swf");
+    MCLECallPath("Title", "SetLabel", { title });
+    MCLESetPathVisible("ProgressBar", false);
+    MCLESetPathVisible("Tip", false);
+    // UIScene_ConnectingProgress leaves the movie's Timer spinning
+    MCLESetPathVisible("Timer", true);
+    g_connecting_hold = false;
+    if (!respawn) MCLEConnectingHoldStart();
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, -2, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kLogoDepth, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+    const int none[11] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    MCLESetTooltips(none);
+}
+
+// eAppAction_WaitForDimensionChangeComplete / WaitForRespawnComplete:
+// CloseUIScenes, back to the game
+void Host::closeConnectingProgress() {
+    g_world_connecting = false;
+    g_connecting_respawn = false;
+    g_connecting_hold = false;
+    if (g_world_dead && !mcle_player_is_dead()) g_world_dead = false;
+    mcle_game_set_menu_displayed(false);
+    // UIGroup::closeAllScenes lets the tutorial popup show again
+    mcle_tutorial_show_popup(true);
+    enterWorldUI();
+}
+
+// eAppAction_SaveGameCapturedThumbnail and AutosaveSaveGameCapturedThumbnail:
+// FullscreenProgress with the tips, panorama and logo while
+// SaveWorldThreadProc has the server save, the pad the scene's until then
+void Host::openSaveProgress(bool autosave) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player || g_world_saving || g_exiting_world) return;
+    const bool overPause = g_world_paused && currentMenuSwf == "PauseMenu1080.swf";
+    const bool overInfo = g_world_container && g_world_info &&
+                          currentMenuSwf == "InGameInfoMenu1080.swf";
+    const bool overGame = !g_world_paused && !g_world_dead && !g_world_container && !g_world_connecting &&
+                          !g_world_won;
+    if (!overPause && !overInfo && !overGame) return;
+    // Both reset the autosave timer
+    MCLESetAutosaveTimerTime();
+    // The autosave hides the tutorial popup until it's done. Before the save
+    // starts, as it waits on the tick lock the save holds.
+    if (autosave) mcle_tutorial_show_popup(false);
+    // The scene's constructor clears the progress before its thread starts
+    mcle_game_progress(1, NULL, NULL, NULL);
+    if (!mcle_game_save(autosave ? 1 : 0)) {
+        if (autosave) mcle_tutorial_show_popup(true);
+        return;
+    }
+    g_world_saving = true;
+    g_saving_autosave = autosave;
+    g_saving_over = overPause ? 1 : (overInfo ? 2 : 0);
+    // NavigateToScene's SetMenuDisplayed
+    mcle_game_set_menu_displayed(true);
+    if (overPause) {
+        // NavigateBackToScene comes back to the pause menu
+        navigateForwardTo("FullscreenProgress1080.swf");
+    } else {
+        menuStack.clear();
+        transitionToMenuNamed("FullscreenProgress1080.swf");
+    }
+    g_progress_pct = 0;
+    g_progress_title = -1;
+    g_progress_status = -1;
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, -2, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kLogoDepth, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+    // updateTooltips: no select until done and no cancel
+    const int none[11] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    MCLESetTooltips(none);
+}
+
+// UIScene_FullscreenProgress::tick over the save: the progress renderer's
+// percent, title and status, the next tip, and once the server's save is
+// done the completion, back to the pause menu (NavigateBackToScene) or to
+// what the autosave went over (AutosaveNavigateBack)
+void Host::saveProgressTick() {
+    int title = -1, status = -1, pct = 0;
+    mcle_game_progress(0, &title, &status, &pct);
+    if (pct < 0) pct = 0;
+    if (pct != g_progress_pct) {
+        g_progress_pct = pct;
+        MCLEFullscreenProgressSetBar(pct);
+    }
+    if (title >= 0 && title != g_progress_title) {
+        g_progress_title = title;
+        MCLECallPath("Title", "SetLabel", { MCLEStr(title) });
+    }
+    if (status >= 0 && status != g_progress_status) {
+        g_progress_status = status;
+        MCLECallPath("ProgressBar", "SetLabel", { MCLEStr(status) });
+    }
+    MCLEProgressTipTick();
+    if (!mcle_game_save_done()) return;
+    g_world_saving = false;
+    // UIScene_FullscreenProgress leaves through UIScene::navigateBack, a
+    // save's and an autosave's alike
+    MCLEPlayUISFX("back");
+    if (g_saving_over == 1) {
+        navigateBack();
+        return;
+    }
+    // This just allows it to be shown
+    if (g_saving_autosave) mcle_tutorial_show_popup(true);
+    if (g_saving_over == 2) {
+        // The info menu's movie back up for its reloadMovie
+        g_container_reloading = true;
+        transitionToMenuNamed("InGameInfoMenu1080.swf");
+        g_container_reloading = false;
+        showContainerOverWorld();
+    } else {
+        enterWorldUI();
+    }
+}
+
+// ClientConnection::handleGameEvent WIN_GAME: UIScene_EndPoem, fullscreen
+// over the game
+void Host::openEndPoem() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    if (g_world_container) closeContainerMenu(false);
+    g_world_won = true;
+    mcle_game_set_menu_displayed(true);
+    mcle_tutorial_show_popup(false);
+    menuStack.clear();
+    transitionToMenuNamed("EndPoem1080.swf");
+}
+
+// UIScene_EndPoem constructor
+void Host::initEndPoem() {
+    extern PlayerHandle* g_ruffle_player;
+    menuButtonConfig.clear();
+    g_endpoem_ignore_input = false;
+    mcle_end_poem_init();
+    g_endpoem_requested = 0;
+    // The poem's dirt and shadow fill the whole 1920x1080 movie, all of
+    // TU19's 16:9 screen, and the text scrolls up its middle. Like the
+    // credits background it's grown about the centre to fill a wider
+    // screen, so the game doesn't show at the sides.
+    const float s = MCLEMovieCoverScale(platform::view_size());
+    ruffle_ios_set_root_transform(g_ruffle_player, s, s, 960.0f * (1.0f - s), 540.0f * (1.0f - s));
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, -2, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+}
+
+void Host::resumeFromPause() {
+    g_world_paused = false;
+    // ~UIScene_PauseMenu lets the tutorial popup show again
+    mcle_tutorial_show_popup(true);
+    mcle_game_set_paused(0);
+    enterWorldUI();
+}
+
+void Host::enterWorldUI() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    // The menus are gone once the game starts, UIScene_HUD takes over.
+    // CloseUIScenes' SetMenuDisplayed, the game gets the pad back once
+    // CheckMenuDisplayed has counted the frames down.
+    mcle_game_set_menu_displayed(false);
+    menuStack.clear();
+    transitionToMenuNamed("HUD1080.swf");
+    MCLEHudReset();
+    MCLEGameTooltipsReset();
+    const int depths[] = { -2, kMenuBackgroundDepth, kLogoDepth, kDimDepth, kTooltipsDepth };
+    for (int d : depths) ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, d, 0);
+    platform::splash_set_hidden(true);
+}
+
+// UIScene_FullscreenProgress::tick, fed from the iOS init stages instead
+// of Minecraft::progressRenderer.
+void Host::pollWorldLoad() {
+    int pct = 0;
+    int st = mcle_game_load_status(&pct);
+    if (st < 0) {
+        g_loading_world = false;
+        MCLELoadingHoldPause(false);
+        presentDialogWithTitle_content_buttons_focusIndex_callback(
+            MCLEStr(IDS_CORRUPT_OR_DAMAGED_SAVE_TITLE),
+            "",
+            { MCLEStr(IDS_CONFIRM_OK) },
+            0,
+            [this](MCLEDialogResult r) {
+                navigateBack();
+            });
+        return;
+    }
+    // A new world's findSeed has a stage of its own while the server starts
+    bool findingSeed = st == 0 && mcle_game_load_finding_seed();
+    int stage = findingSeed ? 10 : st;
+    if (stage != g_progress_stage) {
+        if (g_progress_stage == -2)
+            MCLECallPath("Title", "SetLabel", { MCLEStr(IDS_PROGRESS_INITIALISING_SERVER) });
+        g_progress_stage = stage;
+        // loadLevel generates the spawn area of a new level
+        int spawnId = mcle_game_load_is_new() ? IDS_PROGRESS_GENERATING_SPAWN_AREA : IDS_PROGRESS_LOADING_SPAWN_AREA;
+        int statusId = findingSeed ? IDS_PROGRESS_NEW_WORLD_SEED
+                     : (st == 1) ? spawnId
+                     : (st >= 2) ? IDS_PROGRESS_SAVING_TO_DISC : 0;
+        MCLECallPath("ProgressBar", "SetLabel", { statusId ? MCLEStr(statusId) : "" });
+    }
+    if (pct != g_progress_pct) {
+        g_progress_pct = pct;
+        MCLEFullscreenProgressSetBar(pct);
+    }
+    MCLEProgressTipTick();
+}
+
+// UIScene_PauseMenu / UIScene_DeathMenu Exit Game for the host with saving
+// on: RequestAlertMessage(IDS_EXIT_GAME, IDS_CONFIRM_EXIT_GAME) with Cancel,
+// Save and Exit, Exit without Saving
+void Host::requestExitGame() {
+    presentDialogWithTitle_content_buttons_focusIndex_callback(
+        MCLEStr(IDS_EXIT_GAME),
+        MCLEStr(IDS_CONFIRM_EXIT_GAME),
+        { MCLEStr(IDS_CONFIRM_CANCEL), MCLEStr(IDS_EXIT_GAME_SAVE),
+          MCLEStr(IDS_EXIT_GAME_NO_SAVE) },
+        0,
+        [this](MCLEDialogResult r) {
+            exitGameSaveDialogReturned(r);
+        });
+}
+
+// IUIScene_PauseMenu::ExitGameSaveDialogReturned. Saving asks before
+// overwriting a save that's there, and not saving asks too.
+void Host::exitGameSaveDialogReturned(MCLEDialogResult r) {
+    if (r == MCLEDialogResultDecline) {
+        // does the save exist?
+        if (!mcle_storage_save_exists()) {
+            exitWorldSaving(true);
+            return;
+        }
+        presentDialogWithTitle_content_buttons_focusIndex_callback(
+            MCLEStr(IDS_TITLE_SAVE_GAME),
+            MCLEStr(IDS_CONFIRM_SAVE_GAME),
+            { MCLEStr(IDS_CONFIRM_CANCEL), MCLEStr(IDS_CONFIRM_OK) },
+            0,
+            [this](MCLEDialogResult r2) {
+                exitGameConfirmReturned_saving(r2, true);
+            });
+    } else if (r == MCLEDialogResultThird) {
+        presentDialogWithTitle_content_buttons_focusIndex_callback(
+            MCLEStr(IDS_TITLE_DECLINE_SAVE_GAME),
+            MCLEStr(IDS_CONFIRM_DECLINE_SAVE_GAME),
+            { MCLEStr(IDS_CONFIRM_CANCEL), MCLEStr(IDS_CONFIRM_OK) },
+            0,
+            [this](MCLEDialogResult r2) {
+                exitGameConfirmReturned_saving(r2, false);
+            });
+    }
+}
+
+// ExitGameAndSaveReturned / ExitGameDeclineSaveReturned: OK leaves, anything
+// else goes back to the exit choices if the pause menu is up
+void Host::exitGameConfirmReturned_saving(MCLEDialogResult r, bool save) {
+    if (r == MCLEDialogResultDecline) {
+        exitWorldSaving(save);
+    } else if (currentMenuSwf == "PauseMenu1080.swf") {
+        requestExitGame();
+    }
+}
+
+// eAppAction_ExitWorld then ExitWorldCapturedThumbnail: FullscreenProgress
+// with "Exiting game", the tips, panorama and logo while
+// ExitWorldThreadProc runs
+void Host::exitWorldSaving(bool save) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player || g_exiting_world) return;
+    // The save on the way out has the frame from before leaving
+    if (save) {
+        MCLECaptureThumbnailThen([this] { exitWorldAfterThumbnailSaving(true); });
+        return;
+    }
+    exitWorldAfterThumbnailSaving(false);
+}
+
+void Host::exitWorldAfterThumbnailSaving(bool save) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player || g_exiting_world) return;
+    if (!mcle_game_exit_world(save ? 1 : 0)) return;
+    g_exiting_world = true;
+    // clear the autosave timer that might be on screen
+    MCLEShowAutosaveCountdownTimer(false);
+    menuStack.clear();
+    transitionToMenuNamed("FullscreenProgress1080.swf");
+    MCLECallPath("Title", "SetLabel", { MCLEStr(IDS_EXITING_GAME) });
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, -2, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 0);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kLogoDepth, 1);
+    ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+}
+
+// e_ProgressCompletion_NavigateToHomeMenu once the world is gone
+void Host::finishExitWorld() {
+    extern PlayerHandle* g_ruffle_player;
+    g_exiting_world = false;
+    g_world_paused = false;
+    g_world_dead = false;
+    g_world_connecting = false;
+    g_connecting_respawn = false;
+    g_world_won = false;
+    menuStack.clear();
+    // UIController::NavigateToHomeMenu: the menus are on the default texture
+    // pack, and the home menu comes once its skin is back
+    // (m_navigateToHomeOnReload)
+    mcle_texture_packs_navigate_to_home_menu();
+    mcle_handle_xui_actions();
+    if (mcle_ui_take_skin_reload()) reloadSkin();
+    transitionToMenuNamed("MainMenu1080.swf");
+    if (g_ruffle_player) {
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, -2, 1);
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kMenuBackgroundDepth, 0);
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kTooltipsDepth, 1);
+    }
+}
+
+// Ports UIScene_HowToPlayMenu constructor
+// (Common/UI/UIScene_HowToPlayMenu.cpp:77-104). Single
+// FJ_ButtonList_Menu named "HowToList" (eControl_Buttons = 0)
+// with 24 static items from the IDS_HOW_TO_PLAY_MENU_* string
+// table. Selecting an item on console calls a per-topic
+// proceedToScene(eHowToPlay_*) (m_uiHTPSceneA at line 42-75) -
+// those scenes are gameplay-facing tutorial pages not yet in
+// scope, so handlePress here just logs for now.
+void Host::initHowToPlayMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    const char* list = "HowToList";
+    ruffle_ios_call_list_init(g_ruffle_player,
+        (const uint8_t*)list, strlen(list), 0.0);
+    ruffle_ios_call_list_remove_all(g_ruffle_player,
+        (const uint8_t*)list, strlen(list));
+
+    // m_uiHTPButtonNameA without the two Xbox ones, the id is the index
+    static const int kTopics[] = {
+        IDS_HOW_TO_PLAY_MENU_WHATSNEW,
+        IDS_HOW_TO_PLAY_MENU_BASICS,
+        IDS_HOW_TO_PLAY_MENU_MULTIPLAYER,
+        IDS_HOW_TO_PLAY_MENU_HUD,
+        IDS_HOW_TO_PLAY_MENU_CREATIVE,
+        IDS_HOW_TO_PLAY_MENU_INVENTORY,
+        IDS_HOW_TO_PLAY_MENU_CHESTS,
+        IDS_HOW_TO_PLAY_MENU_CRAFTING,
+        IDS_HOW_TO_PLAY_MENU_FURNACE,
+        IDS_HOW_TO_PLAY_MENU_DISPENSER,
+        IDS_HOW_TO_PLAY_MENU_BREWING,
+        IDS_HOW_TO_PLAY_MENU_ENCHANTMENT,
+        IDS_HOW_TO_PLAY_MENU_ANVIL,
+        IDS_HOW_TO_PLAY_MENU_FARMANIMALS,
+        IDS_HOW_TO_PLAY_MENU_BREEDANIMALS,
+        IDS_HOW_TO_PLAY_MENU_TRADING,
+        IDS_HOW_TO_PLAY_MENU_HORSES,
+        IDS_HOW_TO_PLAY_MENU_BEACONS,
+        IDS_HOW_TO_PLAY_MENU_FIREWORKS,
+        IDS_HOW_TO_PLAY_MENU_HOPPERS,
+        IDS_HOW_TO_PLAY_MENU_DROPPERS,
+        IDS_HOW_TO_PLAY_MENU_NETHERPORTAL,
+        IDS_HOW_TO_PLAY_MENU_THEEND,
+        IDS_HOW_TO_PLAY_MENU_HOSTOPTIONS,
+    };
+    for (size_t i = 0; i < sizeof(kTopics) / sizeof(kTopics[0]); ++i) {
+        const std::string label = MCLEStr(kTopics[i]);
+        ruffle_ios_call_list_add_menu_item(
+            g_ruffle_player,
+            (const uint8_t*)list, strlen(list),
+            (const uint8_t*)label.c_str(), strlen(label.c_str()),
+            (double)i);
+    }
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+void Host::initSettingsMenuButtons() {
+    // Mirrors UIScene_SettingsMenu constructor on console
+    // (Common/UI/UIScene_SettingsMenu.cpp). Six buttons, but the id
+    // sequence skips 3 - console leaves BUTTON_ALL index 3 reserved
+    // and numbers Graphics=4, UI=5, ResetToDefaults=6.
+    std::vector<MenuButton> cfg = {
+        { "Button1", MCLEStr(IDS_OPTIONS),           0 },
+        { "Button2", MCLEStr(IDS_AUDIO),             1 },
+        { "Button3", MCLEStr(IDS_CONTROL),           2 },
+        { "Button4", MCLEStr(IDS_GRAPHICS),          4 },
+        { "Button5", MCLEStr(IDS_USER_INTERFACE),    5 },
+        { "Button6", MCLEStr(IDS_RESET_TO_DEFAULTS), 6 },
+    };
+    attachMenuScenery();
+    applyMenuButtonConfig(cfg);
+}
+
+// UIScene_LeaderboardsMenu constructor. Windows64's LeaderboardManager
+// never answers a read (WindowsLeaderboardManager.h), so OnStatsReadComplete
+// never comes and the scene stays on the loading message with m_bIgnoreInput
+// set.
+void Host::initLeaderboardMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    // m_currentLeaderboard 0, m_currentDifficulty 2: SetLeaderboardHeader
+    MCLECallPath("Leaderboard", "SetLabel", { MCLEStr(IDS_LEADERBOARD_TRAVELLING_NORMAL) });
+    // eFM_Friends
+    MCLECallPath("Filter", "Init", { MCLEStr(IDS_LEADERBOARD_FILTER) +
+                                     MCLEStr(IDS_LEADERBOARD_FILTER_FRIENDS) });
+    MCLECallPath("Entries", "Init", { host::format("%s%i", MCLEStr(IDS_LEADERBOARD_ENTRIES).c_str(), 0) });
+    // ReadStats(-1): m_listEntries.clearList, then the loading message. The
+    // movie's constructor moved Info onto the stage, its property finds it.
+    MCLECallPath("Gamers", "ResetLeaderboard", {});
+    MCLECallPath("Info", "SetLabel", { MCLEStr(IDS_LEADERBOARD_LOADING) });
+    MCLESetPathVisible("Info", true);
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// UIScene_DLCMainMenu constructor. The offer categories are only added on
+// Durango (and from the PS store in tick), so on Windows64 the list stays
+// empty under its title.
+void Host::initDLCMainMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+
+    MCLECallPath("OffersList_Title", "Init", { MCLEStr(IDS_DOWNLOADABLE_CONTENT_OFFERS) });
+    // eControl_OffersList
+    const char* list = "OffersList";
+    ruffle_ios_call_list_init(g_ruffle_player,
+        (const uint8_t*)list, strlen(list), 0.0);
+
+    ruffle_ios_call_root_set_focus(g_ruffle_player, -1.0);
+
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+}
+
+// UIScene_SkinSelectMenu's constructor, once the movie is up. The logo is
+// already off for the scene (applyLogoVisibilityForScene).
+void Host::initSkinSelectMenu() {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+
+    attachMenuScenery();
+    menuButtonConfig.clear();
+    menuFocusIndex = 0;
+
+    // The smoky band (depth 1) and the tab and bottom bars in TabSelector
+    // (depth 2) run the width of the 16:9 stage, from one side of TU19's
+    // screen to the other. On a wider screen they go on to its sides.
+    static const int strips[] = { 1, 2 };
+    MCLEExtendStripsToScreen(g_ruffle_player, platform::view_size(), strips, 2);
+
+    mcle_skin_select_open(host::now());
+    MCLEContainerApplyOps();
+    int tips[11];
+    mcle_container_tooltips(tips);
+    MCLESetTooltips(tips);
+}
+
+// The scene's handleDestroy, and its characters off the UI layer
+void Host::closeSkinSelectMenu() {
+    mcle_skin_select_close();
+    mcle_hud_custom_draw(NULL, 0);
+}
+
+// IggyPlayerTickRS from the skin select scene's UIScene::tick: the calls the
+// scene has queued go to the movie, then the movie runs one frame
+static void MCLESkinSelectTickMovie(void) {
+    extern PlayerHandle* g_ruffle_player;
+    MCLEContainerApplyOps();
+    // SkinSelectMenu1080 runs at 30 frames a second
+    if (g_ruffle_player) ruffle_ios_player_tick_headless(g_ruffle_player, 1.0f / 30.0f);
+}
+
+// A UI frame of the skin select menu: the pad (UIController::handleInput),
+// the scene's tick with the movie's frames in it, then the movie drawn with
+// the characters drawn in
+void Host::skinSelectMenuFrame() {
+    extern PlayerHandle* g_ruffle_player;
+    if (mcle_game_console_frame()) {
+        mcle_ios_pad_state pad = {};
+        mcle_ios_input_poll(0, &pad);
+        mcle_skin_select_frame(pad.buttons, lastPadButtons, host::now(), MCLESkinSelectTickMovie);
+        lastPadButtons = pad.buttons;
+    }
+    MCLEContainerApplyOps();
+    if (mcle_skin_select_close_requested()) {
+        navigateBack();
+        return;
+    }
+    int tips[11];
+    mcle_container_tooltips(tips);
+    MCLESetTooltips(tips);
+    // The scene's tick ran the movie's frames, this only draws it
+    ruffle_ios_player_tick(g_ruffle_player, 0.0f);
+    RuffleIosCustomDrawRegion regions[16];
+    int n = ruffle_ios_custom_draw_regions(g_ruffle_player, regions, 16);
+    n = std::max(0, std::min(n, 16));
+    mcle_skin_select_custom_draw(reinterpret_cast<const MCLECustomDrawRegion*>(regions), n);
+}
+
+// Present a MessageBox-style dialog overlay, as in console's
+// UIController::RequestMessageBox flow (UIController.cpp:2951):
+// stash the callback / titles / buttons, navigate to the
+// MessageBox SWF scene, which reads back the stash in its init
+// method and configures the authored scene. Cancel (B) and button
+// presses both fire the callback with the matching result code.
+//
+// buttonLabels is filled END-FIRST so a 2-button dialog is
+// typically ["OK", "Cancel"] (OK = Button2, Cancel = Button3 on
+// the authored SWF), as in UIScene_MessageBox.cpp:26
+// where Button0 is filled last.
+void Host::presentDialogWithTitle_content_buttons_focusIndex_callback(const std::string& title,
+                                                                      const std::string& content,
+                                                                      const std::vector<std::string>& buttonLabels,
+                                                                      int focus,
+                                                                      MCLEDialogCallback callback)
+{
+    if (!buttonLabels.size() || buttonLabels.size() > 4) {
+        host::log("[dialog] invalid button count %zu", buttonLabels.size());
+        if (callback) callback(MCLEDialogResultCancelled);
+        return;
+    }
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) {
+        if (callback) callback(MCLEDialogResultCancelled);
+        return;
+    }
+
+    std::shared_ptr<MCLEDialogRequest> req = std::make_shared<MCLEDialogRequest>();
+    req->title = title;
+    req->content = content;
+    req->buttonLabels = buttonLabels;
+    req->focusIndex = focus;
+    req->callback = callback;
+    g_pending_dialog = req;
+    g_dialog_focus_control = -1;
+    g_dialog_focus_child = -1;
+
+    // Dim the scene behind the dialog by flipping the
+    // MenuBackground sibling on. Mirrors console's
+    // addComponent(eUIComponent_MenuBackground) at UIScene_
+    // MessageBox.cpp:49. Dim sits ABOVE the logo (kDimDepth >
+    // kLogoDepth) so logo + scene are darkened underneath it,
+    // as on console, where the dialog overlay covers everything
+    // except the tooltips strip.
+    ruffle_ios_set_xui_sibling_visible_at_depth(
+        g_ruffle_player, kDimDepth, 1);
+
+    // Sibling-overlay model. Add MessageBox1080.swf as a stage
+    // sibling at depth kMessageBoxDepth on top of the underlying
+    // scene, then quiet the underlying FJ_Document with
+    // clear_stage_dispatch_list + redispatch_added_to_stage so
+    // ENTER/ESCAPE only trigger the dialog's nav handler. The
+    // underlying scene stays alive at depth 0 the whole time so
+    // it reappears instantly on dismiss without a reload.
+    std::string docsPath = host::documents_dir();
+    std::string path = host::path_join(docsPath, "MessageBox1080.swf");
+    std::vector<uint8_t> data = host::read_file(path);
+    if (!data.size()) {
+        host::log("[dialog] MessageBox1080.swf not found at %s", path.c_str());
+        g_pending_dialog.reset();
+        ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kDimDepth, 0);
+        if (callback) callback(MCLEDialogResultCancelled);
+        return;
+    }
+    std::string url = host::format("file://%s",
+                                   host::replace_all(path, " ", "%20").c_str());
+
+    // Snapshot the existing siblings' (panorama / logo / tooltips)
+    // matrices around the burst so a brief 0.5s of normal animation
+    // doesn't leave them with any visible drift. Only the new
+    // MessageBox sibling needs frames to construct; everything else
+    // can be rewound to its pre-dialog matrix on the way out.
+    ruffle_ios_player_snapshot_xui_matrices(g_ruffle_player);
+
+    // UIComponent_Panorama ticks its own movie, so building the message box
+    // takes none of its frames. The components are held while the box
+    // builds, or the panorama's timeline would run on under its restored
+    // matrix and skip ahead on the next frame. The box is added after this,
+    // so it isn't held.
+    ruffle_ios_player_set_xui_siblings_playing(g_ruffle_player, 0);
+
+    int rc = ruffle_ios_add_sibling_swf_to_root(
+        g_ruffle_player,
+        data.data(), data.size(),
+        (const uint8_t*)url.c_str(), strlen(url.c_str()),
+        kMessageBoxDepth, 1.0f, 1.0f, 0.0f, 0.0f);
+    host::log("[dialog] add_sibling MessageBox @%d -> %d", kMessageBoxDepth, rc);
+
+    // 30-tick headless burst so the sibling's preload + ABC class
+    // construct + first-frame placement finish before its
+    // AS3 is driven. The other siblings were held before the box was
+    // added, so the box itself still gets these frames.
+    for (int i = 0; i < 30; ++i) {
+        ruffle_ios_player_tick_headless(g_ruffle_player, 1.0f / 60.0f);
+    }
+
+    populateMessageBoxSibling();
+
+    ruffle_ios_player_set_xui_siblings_playing(g_ruffle_player, 1);
+    ruffle_ios_player_restore_xui_matrices(g_ruffle_player);
+
+    // Swap the bottom-strip tooltips to MessageBox's pair
+    // (Select / Cancel). Mirrors UIScene_MessageBox::updateTooltips
+    // (UIScene_MessageBox.cpp:74-77). Restored to the underlying
+    // scene's pair in finishDialogWithResult.
+    seedTooltipsForScene_hidden("MessageBox1080.swf", false);
+
+    // Hand stage-level KEY_DOWN ownership over to the dialog.
+    // Without this both FJ_Documents fight on every press because
+    // the underlying scene's button names (Button0..N) collide
+    // with MessageBox's, and FJ_Document.keyDownHandler bails by
+    // name (m_this.getChildByName) which can't tell them apart.
+    ruffle_ios_clear_stage_dispatch_list(g_ruffle_player);
+    ruffle_ios_redispatch_added_to_stage(g_ruffle_player, kMessageBoxDepth);
+}
+
+// Drive MessageBox1080.swf's AS3 once it's attached as a sibling.
+// Mirrors UIScene_MessageBox.cpp:5-55:
+//   root.Init(count, focus)         hides unused buttons, wires nav
+//   Title.SetLabel / Content.SetLabel
+//   Button3..Button(4-count).Init(label, id)  filled end-first
+//   [tick burst so TextField layout completes]
+//   root.AutoResize()               resize panel + shift buttons
+void Host::populateMessageBoxSibling() {
+    extern PlayerHandle* g_ruffle_player;
+    std::shared_ptr<MCLEDialogRequest> req = g_pending_dialog;
+    if (!g_ruffle_player || !req) return;
+
+    int count = (int)req->buttonLabels.size();
+
+    // root.Init(count, focusIndex).
+    double initArgs[2] = { (double)count, (double)req->focusIndex };
+    const char* initName = "Init";
+    ruffle_ios_call_method_on_sibling_root(
+        g_ruffle_player, kMessageBoxDepth,
+        (const uint8_t*)initName, strlen(initName),
+        initArgs, 2);
+
+    // Title / Content labels. FJ_Label.Init takes a single arg
+    // (the label text) -- passing (text, id) causes
+    // ArgumentError #1063. Use SetLabel, which the class
+    // explicitly supports as a post-construction update path
+    // that also flips m_bInitialised.
+    struct LabelSeed { const char* name; const char* text; };
+    LabelSeed labels[] = {
+        { "Title",   req->title.c_str() },
+        { "Content", req->content.c_str() },
+    };
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i) {
+        ruffle_ios_call_init_on_sibling_child(
+            g_ruffle_player, kMessageBoxDepth,
+            (const uint8_t*)labels[i].name, strlen(labels[i].name),
+            (const uint8_t*)"SetLabel", 8,
+            (const uint8_t*)labels[i].text, strlen(labels[i].text),
+            0.0);
+    }
+
+    // Fill buttons end-first. Authored slot 3 holds the LAST
+    // visible button; the id is the sequence counter (0 for the
+    // first visible, etc.) which is what handlePress's controlId
+    // -> Accept/Decline mapping keys off (UIScene_MessageBox.cpp:
+    // 120-141).
+    int buttonIndex = 0;
+    std::vector<std::string> buttonNames = { "Button0", "Button1", "Button2", "Button3" };
+    for (int slot = 4 - count; slot < 4; ++slot) {
+        std::string label = req->buttonLabels[buttonIndex];
+        const char* n = buttonNames[slot].c_str();
+        const char* l = label.c_str();
+        ruffle_ios_call_init_on_sibling_child(
+            g_ruffle_player, kMessageBoxDepth,
+            (const uint8_t*)n, strlen(n),
+            (const uint8_t*)"Init", 4,
+            (const uint8_t*)l, strlen(l),
+            (double)buttonIndex);
+        ++buttonIndex;
+    }
+
+    // Tick the player a few frames so the TextField layout
+    // triggered by each SetLabel (text wrap, line-break pass,
+    // textHeight measure) completes BEFORE AutoResize reads back
+    // Content's current height. Without these ticks, Content's
+    // textHeight on longer bodies (e.g. Reset Settings wraps to
+    // 3 lines) reflects the authored placeholder height, which
+    // makes the panel over-tall and leaves a visible gap between
+    // the body text and the button row.
+    for (int i = 0; i < 10; ++i) {
+        ruffle_ios_player_tick_headless(g_ruffle_player, 1.0f / 60.0f);
+    }
+
+    // root.AutoResize().
+    const char* resize = "AutoResize";
+    ruffle_ios_call_method_on_sibling_root(
+        g_ruffle_player, kMessageBoxDepth,
+        (const uint8_t*)resize, strlen(resize),
+        NULL, 0);
+}
+
+// Fire the pending dialog's callback with a result and tear down
+// the MessageBox sibling overlay. Shared by the handlePress route
+// (for button presses) and the B-back handler (for cancellation).
+void Host::finishDialogWithResult(MCLEDialogResult result) {
+    std::shared_ptr<MCLEDialogRequest> req = g_pending_dialog;
+    if (!req) return;  // already torn down (idempotent)
+    g_pending_dialog.reset();
+    extern PlayerHandle* g_ruffle_player;
+    if (g_ruffle_player) {
+        // Hide dim, drop the MessageBox sibling, and hand stage
+        // KEY_DOWN ownership back to the underlying scene's
+        // FJ_Document. Logo wasn't toggled on dialog open (the
+        // dim covers it underneath), so no logo restore needed.
+        ruffle_ios_set_xui_sibling_visible_at_depth(
+            g_ruffle_player, kDimDepth, 0);
+        ruffle_ios_remove_sibling_at_depth(
+            g_ruffle_player, kMessageBoxDepth);
+        ruffle_ios_clear_stage_dispatch_list(g_ruffle_player);
+        ruffle_ios_redispatch_added_to_stage(g_ruffle_player, -1);
+        // Restore the underlying scene's tooltips and focus
+        // highlight. seedTooltipsForScene picks the (A, B) pair
+        // that scene's updateTooltips override would have set
+        // on console; refreshFocusState pushes ChangeState=
+        // SELECTED on whichever button menuFocusIndex points at.
+        if (!currentMenuSwf.empty()) {
+            seedTooltipsForScene_hidden(currentMenuSwf, false);
+        }
+        refreshFocusState();
+        // The message box was on the same stage and took its focus. The
+        // scene's own movie keeps it on Windows64, so it goes back to the
+        // control it was on.
+        if (menuButtonConfig.empty() && g_scene_focus_control >= 0) {
+            ruffle_ios_call_root_set_focus(g_ruffle_player, (double)g_scene_focus_control);
+        }
+    }
+    if (req->callback) req->callback(result);
+}
+
+// Forward navigation: push the current menu + its focus index onto
+// the back stack before swapping to the new one, so a later B-press
+// returns here with the same button highlighted. Mirrors how console
+// pushes the current scene state before NavigateToScene.
+void Host::navigateForwardTo(const std::string& swfName) {
+    if (!currentMenuSwf.empty()) {
+        menuStack.push_back({
+            currentMenuSwf,
+            menuFocusIndex,
+            g_scene_focus_control,
+            g_scene_focus_child,
+        });
+    }
+    transitionToMenuNamed(swfName);
+}
+
+// Back navigation: pop the stack and restore the previous scene
+// plus its focus index. Mirrors UIController::NavigateBack
+// (Common/UI/UIController.cpp). Empty stack falls back to MainMenu
+// focus 0 so the user never gets stranded.
+void Host::navigateBack() {
+    std::string target;
+    int restoreFocus = 0;
+    int restoreControl = -1;
+    int restoreChild = -1;
+    if (menuStack.size() > 0) {
+        MenuStackEntry entry = menuStack.back();
+        target = entry.swf;
+        restoreFocus = entry.focus;
+        restoreControl = entry.focusControl;
+        restoreChild = entry.focusChild;
+        menuStack.pop_back();
+    }
+    if (target.empty()) target = "MainMenu1080.swf";
+    transitionToMenuNamed(target);
+    // transitionToMenuNamed resets menuFocusIndex to 0 inside its
+    // init-buttons callback. Override after it runs so the focused
+    // button is the one the user left on.
+    menuFocusIndex = restoreFocus;
+    refreshFocusState();
+    // On Windows64 the scene under the one that closed still has its movie,
+    // with the focus where it was. Here the movie was loaded again, so the
+    // focus goes back like UIScene::reloadMovie puts it back.
+    extern PlayerHandle* g_ruffle_player;
+    if (g_ruffle_player && menuButtonConfig.empty() && restoreControl >= 0 && currentMenuSwf == target) {
+        g_focus_restoring = true;
+        ruffle_ios_call_root_set_focus(g_ruffle_player, (double)restoreControl);
+        if (target == "LoadOrJoinMenu1080.swf") {
+            if (restoreControl == 0 && restoreChild >= 0 &&
+                restoreChild < g_load_default_buttons + mcle_saves_count()) {
+                g_load_save_list_index = restoreChild;
+                MCLELoadOrJoinRefocusSave();
+            }
+        } else if (target == "HowToPlayMenu1080.swf" && restoreChild >= 0) {
+            MCLECallPath("HowToList", "HighlightItem", { restoreChild });
+        }
+        g_focus_restoring = false;
+    }
+}
+
+void Host::transitionToMenuNamed(const std::string& swfName) {
+    extern PlayerHandle* g_ruffle_player;
+    if (!g_ruffle_player) return;
+    std::string docsPath = host::documents_dir();
+    std::string path = host::path_join(docsPath, swfName);
+    std::vector<uint8_t> data = host::read_file(path);
+    if (!data.size()) {
+        host::log("[MinecraftVC] transition: %s not found at %s", swfName.c_str(), path.c_str());
+        return;
+    }
+    std::string url = host::format("file://%s",
+                                   host::replace_all(path, " ", "%20").c_str());
+    // Clear AS3 stage focus so the previous scene's focus highlight
+    // doesn't paint on top of the new scene. Settings scenes call
+    // SWF SetFocus(-1) via ruffle_ios_call_root_set_focus inside
+    // their init methods to re-establish a scene-local focus,
+    // like UIScene::gainFocus.
+    ruffle_ios_clear_focus(g_ruffle_player);
+
+    // Snapshot panorama/logo/tooltips matrices before the whole
+    // transition sequence. A per-tick restore inside the 30-tick
+    // headless burst wasn't enough: the ~15 call_init_on_named_child
+    // calls that follow each advance the executor by a few px, adding
+    // up to ~45 authored px of scroll (the visible jump). Snapshot
+    // once here, restore once at the end, and everything in between
+    // (replace_swf, 30 ticks, applyMenuButtonConfig) can drift freely
+    // without affecting the final panorama position.
+    ruffle_ios_player_snapshot_xui_matrices(g_ruffle_player);
+
+    int rc = ruffle_ios_player_replace_swf(
+        g_ruffle_player,
+        data.data(), data.size(),
+        (const uint8_t*)url.c_str(), strlen(url.c_str()));
+    host::log("[MinecraftVC] transition -> %s rc=%d", swfName.c_str(), rc);
+    if (rc == 1) {
+        if (mcle_skin_select_is_open()) closeSkinSelectMenu();
+        if (mcle_keyboard_front_end_is_open()) closeFrontEndKeyboard();
+        currentMenuSwf = swfName;
+        g_current_scene_name = swfName;
+        g_scene_focus_control = -1;
+        g_scene_focus_child = -1;
+        menuFocusIndex = 0;
+        // Re-roll the splash when entering MainMenu. Console does
+        // the same every time UIScene_MainMenu is constructed.
+        if (swfName == "MainMenu1080.swf") {
+            pickSplash();
+        }
+        // Advance the scene HEADLESS (no render) so its async imports
+        // finish and Button1..ButtonN get placed, but the surface still
+        // shows the previous frame. On console's scene swap,
+        // initialiseMovie + control init also happen before the
+        // scene becomes visible. Without this, the new menu renders
+        // with Flash authoring-time placeholder text ("FJ_Label") for
+        // the ~500ms it takes the Init calls to land.
+        // Freeze every non-root stage child's Timeline (panorama,
+        // logo, tooltips) across the burst so their scroll animations
+        // don't drift while the new scene constructs. Root scene
+        // still advances at full dt so Init calls can land and
+        // labels resolve. Play resumes immediately after the loop.
+        ruffle_ios_player_set_xui_siblings_playing(g_ruffle_player, 0);
+        for (int i = 0; i < 30; ++i) {
+            ruffle_ios_player_tick_headless(g_ruffle_player, 1.0f / 60.0f);
+        }
+        ruffle_ios_player_set_xui_siblings_playing(g_ruffle_player, 1);
+        // UIScene::initialiseMovie -> updateSafeZone, fullscreen
+        MCLECallPath("", "SetSafeZone", { kSafeZoneTop, kSafeZoneBottom, kSafeZoneLeft, kSafeZoneRight });
+        if (swfName == "MainMenu1080.swf") {
+            initMainMenuButtons();
+        } else if (swfName == "SaveMessage1080.swf") {
+            initSaveMessage();
+        } else if (swfName == "HelpAndOptionsMenu1080.swf") {
+            initHelpAndOptionsButtons();
+        } else if (swfName == "SettingsMenu1080.swf") {
+            initSettingsMenuButtons();
+        } else if (swfName == "SettingsOptionsMenu1080.swf") {
+            initSettingsOptionsMenu();
+        } else if (swfName == "SettingsAudioMenu1080.swf") {
+            initSettingsAudioMenu();
+        } else if (swfName == "SettingsControlMenu1080.swf") {
+            initSettingsControlMenu();
+        } else if (swfName == "SettingsGraphicsMenu1080.swf") {
+            initSettingsGraphicsMenu();
+        } else if (swfName == "SettingsUIMenu1080.swf") {
+            initSettingsUIMenu();
+        } else if (swfName == "LoadOrJoinMenu1080.swf") {
+            initLoadOrJoinMenu();
+        } else if (swfName == "LoadMenu1080.swf") {
+            initLoadMenu();
+        } else if (swfName == "CreateWorldMenu1080.swf") {
+            initCreateWorldMenu();
+        } else if (swfName == "LaunchMoreOptionsMenu1080.swf") {
+            initMoreOptionsMenu();
+        } else if (swfName == "FullscreenProgress1080.swf") {
+            initFullscreenProgress();
+        } else if (swfName == "PauseMenu1080.swf") {
+            initPauseMenu();
+        } else if (swfName == "HUD1080.swf") {
+            // UIScene_HUD::updateSafeZone, no right edge on a full screen
+            MCLECallPath("", "SetSafeZone", { kSafeZoneTop, kSafeZoneBottom, kSafeZoneLeft, 0.0 });
+            // UIScene_HUD constructor
+            MCLECallPath("", "SetDragonLabel", { MCLEStr(IDS_BOSS_ENDERDRAGON_HEALTH) });
+            MCLECallPath("", "SetSelectedLabel", { "" });
+            for (int i = 1; i <= 10; ++i) {
+                MCLECallPath(host::format("Label%d", i), "Init", { "" });
+            }
+            MCLECallPath("Jukebox", "Init", { "" });
+        } else if (swfName == "DeathMenu1080.swf") {
+            initDeathMenu();
+        } else if (swfName == "EndPoem1080.swf") {
+            initEndPoem();
+        } else if (swfName == "HowToPlayMenu1080.swf") {
+            initHowToPlayMenu();
+        } else if (swfName == "Credits1080.swf") {
+            // UIScene_Credits makes no sounds of its own
+            menuButtonConfig.clear();
+            MCLECreditsInit();
+            MCLECreditsCoverScreen(g_ruffle_player, platform::view_size());
+        } else if (swfName == "HowToPlay1080.swf") {
+            attachMenuScenery();
+            menuButtonConfig.clear();
+            MCLEHowToPlayInit();
+        } else if (swfName == "Controls1080.swf") {
+            attachMenuScenery();
+            menuButtonConfig.clear();
+            MCLEControlsInit();
+        } else if (swfName == "InventoryMenu1080.swf") {
+            initInventoryMenu();
+        } else if (swfName == "Crafting2x2Menu1080.swf") {
+            initCraftingMenu(false);
+        } else if (swfName == "Crafting3x3Menu1080.swf") {
+            initCraftingMenu(true);
+        } else if (swfName == "CreativeMenu1080.swf") {
+            initCreativeMenu();
+        } else if (swfName == mcle_container_server_movie()) {
+            initServerContainer();
+        } else if (swfName == "SignEntryMenu1080.swf") {
+            initSignEntryMenu();
+        } else if (swfName == "Keyboard1080.swf") {
+            initKeyboardMenu();
+        } else if (swfName == "InGameInfoMenu1080.swf") {
+            initInGameInfoMenu();
+        } else if (swfName == "InGameHostOptions1080.swf" ||
+                   swfName == "InGamePlayerOptions1080.swf") {
+            initInGameOptionsMenu();
+        } else if (swfName == "LeaderboardMenu1080.swf") {
+            initLeaderboardMenu();
+        } else if (swfName == "DLCMainMenu1080.swf") {
+            initDLCMainMenu();
+        } else if (swfName == "SkinSelectMenu1080.swf") {
+            initSkinSelectMenu();
+        }
+
+        // Per-scene scenery visibility. Console drives this per
+        // scene via updateComponents() calling
+        // UILayer::showComponent(eUIComponent_Logo / _Panorama, bool)
+        // (UILayer.cpp:544+). A table here mirrors the source-side
+        // decisions. Scenes not listed keep the default (Logo on,
+        // Panorama on) so MainMenu / HelpAndOptions / LoadOrJoin /
+        // HowToPlay / Settings all look right without per-scene
+        // changes. The logo-off list matches which scenes pass
+        // false to showComponent for eUIComponent_Logo in their
+        // updateComponents() implementations:
+        //   SkinSelectMenu.cpp:143
+        //   LeaderboardsMenu.cpp:150
+        //   CreateWorldMenu.cpp:263
+        //   LaunchMoreOptionsMenu.cpp:201
+        // UIScene_DLCMainMenu has none, the logo stays as the main
+        // menu showed it.
+        applyLogoVisibilityForScene(swfName);
+
+        // Seed the Tooltips bottom-strip on every scene transition.
+        // Mirrors what each console UIScene::updateTooltips does
+        // (e.g. UIScene_SettingsAudioMenu.cpp:45 calls
+        // ui.SetTooltips(iPad, IDS_TOOLTIPS_SELECT, IDS_TOOLTIPS_BACK)
+        // which routes to UIController::SetTooltips and then to
+        // UIComponent_Tooltips::SetTooltips, eventually firing
+        // ToolTips.as SetToolTip per button).
+        // seedTooltipsForScene picks the right (A, B) pair per
+        // scene to match each console UIScene::updateTooltips
+        // override. MessageBox stays visible with Select / Cancel
+        // instead of being hidden, as on console.
+        seedTooltipsForScene_hidden(swfName, false);
+        // Dump the new menu's root children to show which buttons/
+        // named instances to drive next. Labels aren't Init'd yet for
+        // non-MainMenu scenes; that's a per-scene string table follow-up.
+        static uint8_t childBuf[4096];
+        size_t n = ruffle_ios_enumerate_root_children(
+            g_ruffle_player, childBuf, sizeof(childBuf));
+        std::string childList = n
+            ? std::string((const char*)childBuf, n)
+            : "<empty>";
+        host::log("[MinecraftVC] %s root children:\n%s", swfName.c_str(), childList.c_str());
+    }
+    // Restore the panorama/logo/tooltips matrices stashed at the
+    // start of this method. Anything that advanced the XUI bitmap
+    // tx during the transition gets wiped; normal scroll resumes
+    // from where it was visible before the A-press.
+    ruffle_ios_player_restore_xui_matrices(g_ruffle_player);
+}
+
+void Host::tick() {
+    g_frame_seconds = mcle_game_frame_begin(platform::frame_seconds()) / 60.0f;
+
+    // The main loop's app.HandleXuiActions, the texture pack reload
+    mcle_handle_xui_actions();
+    if (mcle_ui_take_skin_reload()) reloadSkin();
+
+    mcle_game_tick();
+
+    // UIController::CheckMenuDisplayed, once a frame
+    mcle_game_check_menu_displayed();
+
+    // The thumbnail came back from the world frame drawn last tick (or no
+    // world frame came), so what was waiting on it goes
+    if (g_after_thumbnail &&
+        (!mcle_metal_thumbnail_pending() || ++g_after_thumbnail_frames > 30)) {
+        std::function<void()> then = g_after_thumbnail;
+        g_after_thumbnail = nullptr;
+        then();
+    }
+
+
+    // GameRenderer::CachePlayerGammas / ComputeGammaFromSlider. Windows64's
+    // PostProcesser puts it on the whole frame after ui.render, so the menus
+    // and HUD get it too, and outside a world it comes from the slider alone.
+    {
+        float slider = (float)mcle_settings_get(MCLE_SETTING_Gamma);
+        slider = std::max(slider, 0.0f);
+        slider = std::min(slider, 100.0f);
+        float gamma = slider > 50.0f ? 1.0f + (slider - 50.0f) / 50.0f * 1.2f
+                                     : 1.0f - (50.0f - slider) / 50.0f * 0.4f;
+        mcle_metal_set_gamma(gamma);
+        extern PlayerHandle* g_ruffle_player;
+        static PlayerHandle* s_gammaPlayer = NULL;
+        static float s_ruffleGamma = 1.0f;
+        if (g_ruffle_player && (g_ruffle_player != s_gammaPlayer || gamma != s_ruffleGamma)) {
+            ruffle_ios_player_set_gamma(g_ruffle_player, gamma);
+            s_gammaPlayer = g_ruffle_player;
+            s_ruffleGamma = gamma;
+        }
+    }
+
+    // Once the world simulation is ticking, take over
+    // the screen with the legacy Metal path (sky-color clear via
+    // mcle_render_frame). Bypasses Ruffle entirely so the SWF menu
+    // doesn't keep drawing on top of the world output.
+    MCLEPanoramaTick();
+
+    // Longer Loading Screens: the world stays paused under its loading
+    // screen until the hold is over, then starts as it would have
+    bool loadHeld = false;
+    if (g_loading_world) {
+        loadHeld = MCLELoadingHeld();
+        MCLELoadingHoldPause(loadHeld);
+    }
+
+    if (mcle_world_is_ticking() && !loadHeld) {
+        platform::splash_set_hidden(true);
+        if (g_loading_world) {
+            g_loading_world = false;
+            host::log("[MinecraftVC] world ready, leaving FullscreenProgress");
+            enterWorldUI();
+            // UIScene_LoadMenu starts the autosave timer with the game
+            MCLESetAutosaveTimerTime();
+            // Level changes and wins from here on are this world's
+            g_level_changes_seen = mcle_game_level_changes(NULL, NULL);
+            g_wins_seen = mcle_game_wins();
+        }
+        if (g_world_saving) saveProgressTick();
+        // ClientConnection::handleRespawn and handleGameEvent's WIN_GAME
+        {
+            int finished = 0, titleId = -1;
+            const int started = mcle_game_level_changes(&finished, &titleId);
+            if (started != g_level_changes_seen && !g_world_saving) {
+                g_level_changes_seen = started;
+                openConnectingProgress_respawn(titleId, false);
+            }
+            const int wins = mcle_game_wins();
+            if (wins != g_wins_seen && !g_world_saving) {
+                g_wins_seen = wins;
+                openEndPoem();
+            }
+            // eAppAction_WaitForDimensionChangeComplete / WaitForRespawnComplete
+            const bool connected = g_world_connecting && finished == g_level_changes_seen &&
+                                   (!g_connecting_respawn || mcle_game_respawns() != g_respawns_seen);
+            // Longer Loading Screens: once the change is done the game waits
+            // paused under the screen for the rest of the hold
+            const bool connectHeld = connected && g_connecting_hold && MCLELoadingHeld();
+            MCLELoadingHoldPause(connectHeld);
+            if (connected && !connectHeld) {
+                closeConnectingProgress();
+            } else if (g_world_connecting && g_connecting_hold) {
+                MCLEProgressTipTick();
+            }
+        }
+        // Minecraft::run's autosave, with no app action going (a level change,
+        // a thumbnail being taken): not with the pause menu or a scene that
+        // ignores autosaves up (death, containers, the End poem,
+        // FullscreenProgress), and the timer starts again once the save has
+        // gone. The last 5 seconds count down. The host and player options
+        // over the info menu have no reloadMovie to come back with, so it
+        // waits for them to go.
+        if (!g_world_connecting && !g_after_thumbnail) {
+            const bool infoUp = g_world_container && g_world_info &&
+                                currentMenuSwf == "InGameInfoMenu1080.swf";
+            if (!g_world_paused && !g_world_dead && (!g_world_container || infoUp) && !g_world_won &&
+                !g_world_saving) {
+                unsigned char autosave = mcle_settings_get(MCLE_SETTING_Autosave);
+                const double now = host::now();
+                if (autosave != 0 && now > g_autosave_due) {
+                    // disable the autosave countdown
+                    MCLEShowAutosaveCountdownTimer(false);
+                    host::log("[MinecraftVC] autosave");
+                    MCLECaptureThumbnailThen([this] { openSaveProgress(true); });
+                    MCLESetAutosaveTimerTime();
+                } else if (autosave != 0) {
+                    const unsigned int secs = (unsigned int)(g_autosave_due - now);
+                    if (secs < 6) {
+                        MCLEShowAutosaveCountdownTimer(true);
+                        MCLEUpdateAutosaveCountdownTimer(secs);
+                    }
+                }
+            } else {
+                // disable the autosave countdown
+                MCLEShowAutosaveCountdownTimer(false);
+            }
+        }
+        // Minecraft::tick shows the death menu once the player has died with
+        // no menu up (the in game info menu holds it off), and goes back to
+        // the game when the respawned player is alive
+        if (!g_world_dead && !g_world_paused && !g_world_connecting && !g_world_won && !g_world_saving &&
+            !(g_world_container && g_world_info) && mcle_player_is_dead()) {
+            openDeathMenu();
+        } else if (g_world_dead && !mcle_player_is_dead()) {
+            g_world_dead = false;
+            // ~UIScene_DeathMenu, unless ConnectingProgress took its place
+            if (!g_world_connecting) {
+                mcle_game_set_menu_displayed(false);
+                mcle_tutorial_show_popup(true);
+                enterWorldUI();
+            }
+        }
+        // Minecraft::tick: the game info action opens the in game info menu,
+        // Start the pause menu, the inventory action the inventory
+        const bool sceneUp = g_world_connecting || g_world_won || g_world_saving;
+        if (!g_world_paused && !g_world_dead && !g_world_container && !sceneUp) {
+            mcle_ios_pad_state pad;
+            if (mcle_ios_input_poll(0, &pad)) {
+                // InputManager.ButtonPressed gives no game actions while a
+                // menu is still displayed
+                const uint32_t game = mcle_game_menu_displayed() ? 0 : pad.buttons;
+                bool startNow = (game & 0x00000010u) != 0;
+                bool startBefore = (lastPadButtons & 0x00000010u) != 0;
+                bool inventoryPressed = (game & ~lastPadButtons & mcle_container_inventory_buttons()) != 0;
+                bool gameInfoPressed = (game & ~lastPadButtons & mcle_ingame_info_buttons()) != 0;
+                lastPadButtons = pad.buttons;
+                if (gameInfoPressed && mcle_ingame_info_input_allowed()) openInGameInfoMenu();
+                else if (startNow && !startBefore) {
+                    // Minecraft::tick's pause press
+                    MCLEPlayUISFX("press");
+                    openPauseMenu();
+                }
+                else if (inventoryPressed) openInventoryMenu();
+            }
+        }
+        // The crafting action and the server's ContainerOpenPacket
+        if (!g_world_paused && !g_world_dead && !sceneUp) {
+            int request = mcle_container_take_request();
+            if (request == MCLE_CONTAINER_CRAFTING_2X2) openCraftingMenu(false);
+            else if (request == MCLE_CONTAINER_CRAFTING_3X3) openCraftingMenu(true);
+            else if (request == MCLE_CONTAINER_CREATIVE) openCreativeMenu();
+            else if (request == MCLE_CONTAINER_SERVER) openServerContainer();
+            // ClientConnection::handleTileEditorOpen
+            if (mcle_sign_entry_take_request()) openSignEntryMenu();
+        }
+        // Saving, the game isn't started and the world isn't drawn
+        if (!g_world_saving) mcle_render_frame();
+        if (g_world_container && !g_world_saving) {
+            containerMenuFrame();
+            return;
+        }
+        if (!g_world_paused && !g_world_dead && !sceneUp) {
+            const double uiStart = host::now();
+            MCLEHudPump();
+            MCLEGameTooltipsPump();
+            MCLETutorialPopupFrame(true);
+            // Keep the SWF layer presenting over the world (transparent stage)
+            extern PlayerHandle* g_ruffle_player;
+            if (g_ruffle_player) {
+                ruffle_ios_player_tick(g_ruffle_player, g_frame_seconds);
+                // The custom draw callbacks for what the movie just drew
+                static_assert(sizeof(RuffleIosCustomDrawRegion) == sizeof(MCLECustomDrawRegion),
+                              "region layouts differ");
+                RuffleIosCustomDrawRegion regions[32];
+                int n = ruffle_ios_custom_draw_regions(g_ruffle_player, regions, 32);
+                n = std::max(0, std::min(n, 32));
+                MCLETutorialPopupRegions();
+                mcle_hud_custom_draw(reinterpret_cast<const MCLECustomDrawRegion*>(regions), n);
+            }
+            mcle_metal_add_phase_ms(2, (host::now() - uiStart) * 1000.0);
+            return;
+        }
+        // The HUD isn't up, nothing to draw over it. Change Skin draws its
+        // characters on the same layer.
+        if (!mcle_skin_select_is_open()) mcle_hud_custom_draw(NULL, 0);
+        // Paused: the pause menu takes input below like any other menu,
+        // drawn over the frozen world
+    }
+    // Not over the HUD or a menu in game, so the tutorial popup is hidden
+    MCLETutorialPopupFrame(false);
+
+    if (g_loading_world) {
+        // A world that's ready leaves the last progress up, the tips go on
+        if (loadHeld && mcle_world_is_ticking()) MCLEProgressTipTick();
+        else pollWorldLoad();
+    }
+    if (g_exiting_world && mcle_game_exit_world_done()) finishExitWorld();
+
+    // Splash text pulse + position. Mirrors CXuiCtrlSplashPulser::
+    // OnRender (Common/XUI/XUI_Ctrl_SplashPulser.cpp): pulses with
+    // sin(currentTimeMillis), rotated -17 degrees, centered at the
+    // authored (612, 126) position on the 1920x1080 stage. Only
+    // visible on MainMenu; hidden on sub-scenes, as on console.
+    bool onMainMenu = currentMenuSwf == "MainMenu1080.swf";
+    platform::splash_set_hidden(!onMainMenu);
+    // Splash is painted on top of the wgpu
+    // surface, so the in-engine dim layer can't reach it.
+    // Alpha-dim it manually while a dialog is up to mirror
+    // what the dim does to the rest of the scene underneath.
+    // MenuBackground1080.swf's authored fill is a black box
+    // at roughly alpha 0.65, which darkens the scene below it
+    // to ~35% of original brightness. Aim for similar: alpha
+    // 0.2 lets enough yellow through that the splash is still
+    // visibly there, but muted to about the same level as the
+    // panorama / logo / buttons behind the dialog.
+    platform::splash_set_alpha(g_pending_dialog ? 0.2f : 1.0f);
+    if (onMainMenu) {
+        uint64_t nowMs = (uint64_t)(host::now() * 1000.0);
+        double phase = (double)(nowMs % 1000) / 1000.0 * M_PI * 2.0;
+        double pulse = 1.0 - fabs(sin(phase)) * 0.05;
+        // Stage fits 1920x1080 inside view by height, centered
+        // horizontally. Compute from view bounds
+        // so this follows screen rotation, safe area, anything.
+        host::Size vb = platform::view_size();
+        double stageH = vb.height;
+        double stageW = stageH * (1920.0 / 1080.0);
+        double stageX = (vb.width - stageW) * 0.5;
+        double authoredScale = stageH / 1080.0;
+        // Authored XUI position is (612, 126) top-left with size
+        // (500, 50) on a 1280x720 stage. MainMenu1080.swf is the
+        // 1.5x-scaled version generated for 1920x1080, so on this
+        // stage the center lands at
+        //   (612*1.5 + 250*1.5, 126*1.5 + 25*1.5)
+        // = (918 + 375, 189 + 37.5) = (1293, 226.5).
+        double sx = stageX + 1293.0 * authoredScale;
+        double sy = 226.5 * authoredScale;
+        double rot = -17.0 * M_PI / 180.0;
+        platform::splash_set_transform((float)sx, (float)sy, (float)rot, (float)pulse);
+    }
+
+    extern PlayerHandle* g_ruffle_player;
+
+    if (currentMenuSwf == "Credits1080.swf") MCLECreditsTick();
+    if (currentMenuSwf == "EndPoem1080.swf") {
+        MCLEEndPoemInput();
+        MCLEEndPoemTick();
+    }
+    // UIScene_ControlsMenu::tick
+    if (currentMenuSwf == "Controls1080.swf" && g_controls_layout_changed) {
+        MCLEControlsPositionAllText();
+    }
+
+    // UIScene_SkinSelectMenu takes the pad itself, the way UIController
+    // hands it to the scene
+    if (g_ruffle_player && mcle_skin_select_is_open() && !g_pending_dialog) {
+        skinSelectMenuFrame();
+        return;
+    }
+    // and so does UIScene_Keyboard over a front end menu
+    if (g_ruffle_player && mcle_keyboard_front_end_is_open() && !g_pending_dialog) {
+        frontEndKeyboardFrame();
+        return;
+    }
+
+    // Edge-detect controller buttons and forward press/release events to
+    // Ruffle so the menu's AS3 input handlers fire. Bit layout matches
+    // 4J_Input.h; the int code passed matches ruffle_ios.h's mapping.
+    if (g_ruffle_player) {
+        mcle_ios_pad_state pad;
+        if (mcle_ios_input_poll(0, &pad)) {
+            // iggy is the key UIScene::convertGameActionToIggyKeycode
+            // gives the button's menu action, -1 for none. repeat is
+            // UIScene::allowRepeat, which leaves A, B, X and Y out.
+            static const struct { uint32_t mask; int code; int iggy; bool repeat; } btnMap[] = {
+                { 0x00000001u,  0,  13, false },  // A     -> South, ENTER
+                { 0x00000002u,  1,  27, false },  // B     -> East, ESCAPE
+                { 0x00000008u,  2, 113, false },  // Y     -> North, F2
+                { 0x00000004u,  3, 112, false },  // X     -> West, F1
+                { 0x00000010u,  4,  -1, false },  // START
+                { 0x00000020u,  5,  -1, false },  // BACK  -> Select
+                { 0x00000400u,  6,  38, true },   // DPadUp, UP
+                { 0x00000800u,  7,  40, true },   // DPadDown, DOWN
+                { 0x00001000u,  8,  37, true },   // DPadLeft, LEFT
+                { 0x00002000u,  9,  39, true },   // DPadRight, RIGHT
+                { 0x00000080u, 10, 115, true },   // LB    -> LeftTrigger, F4
+                { 0x00000040u, 11, 114, true },   // RB    -> RightTrigger, F3
+                { 0x00800000u, 12,  33, true },   // LT    -> LeftTrigger2, PAGE_UP
+                { 0x00400000u, 13,  34, true },   // RT    -> RightTrigger2, PAGE_DOWN
+            };
+            // The menu directions are the D-pad or the left stick
+            // (SetGameJoypadMaps in Windows64_Minecraft.cpp). The buttons
+            // before go through the same, a stick held since the game
+            // isn't a new press.
+            auto withStick = [](uint32_t buttons) {
+                if (buttons & 0x00200000u) buttons |= 0x00000400u;  // LStickUp
+                if (buttons & 0x00100000u) buttons |= 0x00000800u;  // LStickDown
+                if (buttons & 0x00008000u) buttons |= 0x00001000u;  // LStickLeft
+                if (buttons & 0x00004000u) buttons |= 0x00002000u;  // LStickRight
+                return buttons;
+            };
+            uint32_t now = withStick(pad.buttons);
+            uint32_t prev = withStick(lastPadButtons);
+            uint32_t changed = now ^ prev;
+            // UIController::handleKeyPress: a button held down presses
+            // again after UI_REPEAT_KEY_DELAY_MS, then every
+            // UI_REPEAT_KEY_REPEAT_RATE_MS
+            static double repeatAt[sizeof(btnMap)/sizeof(btnMap[0])];
+            uint32_t repeated = 0;
+            const double padTime = host::now();
+            // UIScene_LeaderboardsMenu::handleInput only takes
+            // ACTION_MENU_CANCEL while m_bIgnoreInput is set, which on
+            // Windows64 it always is
+            const bool cancelOnly = !g_pending_dialog &&
+                currentMenuSwf == "LeaderboardMenu1080.swf";
+            for (size_t i = 0; i < sizeof(btnMap)/sizeof(btnMap[0]); ++i) {
+                if (changed & btnMap[i].mask) {
+                    if (now & btnMap[i].mask) {
+                        repeatAt[i] = btnMap[i].repeat ? padTime + 0.3 : 0;
+                        if (cancelOnly && btnMap[i].mask != 0x00000002u) continue;
+                        // The scene's handleInput animates the press first
+                        MCLEAnimateKeyPress(btnMap[i].iggy);
+                        ruffle_ios_player_gamepad_down(g_ruffle_player, btnMap[i].code);
+                    } else {
+                        repeatAt[i] = 0;
+                        ruffle_ios_player_gamepad_up(g_ruffle_player, btnMap[i].code);
+                    }
+                } else if ((now & btnMap[i].mask) && btnMap[i].repeat) {
+                    // One held since before the menu came up was repeating
+                    // all along
+                    if (repeatAt[i] == 0) repeatAt[i] = padTime + 0.1;
+                    if (padTime <= repeatAt[i]) continue;
+                    repeatAt[i] = padTime + 0.1;
+                    if (cancelOnly) continue;
+                    repeated |= btnMap[i].mask;
+                    MCLEAnimateKeyPress(btnMap[i].iggy);
+                    ruffle_ios_player_gamepad_down(g_ruffle_player, btnMap[i].code);
+                }
+            }
+            lastPadButtons = now;
+
+            // Menu focus state machine, driven from the per-scene
+            // menuButtonConfig. Each entry has a "name"/"label"/"id".
+            // FJ_Button.ChangeState codes: 1=SELECTED, 2=UNSELECTED,
+            // 3=PRESSED. DPadUp/Down are edge-detected to walk the list, and
+            // A fires the press animation + any scene action.
+            // When a dialog overlay is up, this whole block is
+            // skipped: the underlying scene is silent (stage
+            // KEY_DOWN was redispatched onto the MessageBox
+            // sibling so its FJ_Document owns input) and the iOS
+            // state machine must not animate or navigate behind
+            // the dialog. B routes through
+            // finishDialogWithResult for cancellation, matching
+            // UIScene_MessageBox::handleInput (line 99-105).
+            std::vector<MenuButton> cfg = g_pending_dialog ? std::vector<MenuButton>() : menuButtonConfig;
+            int count = (int)cfg.size();
+            // buttons that went 0 -> 1, and the ones held long enough to repeat
+            uint32_t pressedNow = (changed & now) | repeated;
+            // UIScene_Settings*Menu::handleInput: ACTION_MENU_OK went to the
+            // movie, where the focused checkbox takes it
+            if (!g_pending_dialog && (pressedNow & 0x00000001u) &&
+                MCLEIsSettingsCheckboxScene(currentMenuSwf)) {
+                MCLESettingsCheckboxPressed();
+            }
+            auto changeState = [=](int idx, int state) {
+                if (idx < 0 || idx >= count) return;
+                const char* name = cfg[idx].name.c_str();
+                ruffle_ios_call_init_on_named_child(
+                    g_ruffle_player,
+                    (const uint8_t*)name, strlen(name),
+                    (const uint8_t*)"ChangeState", 11,
+                    (const uint8_t*)"", 0,
+                    (double)state);
+            };
+            if (count > 0) {
+                int cur = menuFocusIndex;
+                int next = cur;
+                if (pressedNow & 0x00000400u) next = (cur + count - 1) % count;  // DPadUp
+                if (pressedNow & 0x00000800u) next = (cur + 1) % count;          // DPadDown
+                if (next != cur) {
+                    changeState(cur, 2);      // UNSELECTED
+                    changeState(next, 1);     // SELECTED
+                    menuFocusIndex = next;
+                    host::log("[MinecraftVC] menu focus -> %s",
+                              cfg[next].name.c_str());
+                    MCLEPlayUISFX("focus");
+                }
+                if (pressedNow & 0x00000001u) {  // A -> PRESSED
+                    changeState(cur, 3);
+                    // UIScene_PauseMenu and UIScene_DeathMenu's handlePress
+                    // make no sound, the other scenes' do
+                    if (currentMenuSwf != "PauseMenu1080.swf" && currentMenuSwf != "DeathMenu1080.swf") {
+                        mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+                    }
+                    int id = cfg[cur].id;
+                    host::log("[MinecraftVC] menu press -> %s (id=%d)",
+                              cfg[cur].name.c_str(), id);
+                    // Scene transitions per current menu + pressed id.
+                    if (currentMenuSwf == "MainMenu1080.swf") {
+                        // Mirrors UIScene_MainMenu::handlePress
+                        // (Common/UI/UIScene_MainMenu.cpp:301).
+                        // PlayGame opens a sign-in flow then
+                        // CreateLoad/LoadOrJoin; this skips sign-in and
+                        // goes straight to the load/join picker.
+                        // Achievements on console opens the Xbox
+                        // Live platform overlay, not a game SWF, so
+                        // there's nothing to transition to on iOS.
+                        if (id == 0) {
+                            // 4J-PB - Need to check for installed DLC
+                            mcle_dlc_install_if_needed(0);
+                            navigateForwardTo("LoadOrJoinMenu1080.swf");
+                        } else if (id == 1) {
+                            navigateForwardTo("LeaderboardMenu1080.swf");
+                        } else if (id == 2) {
+                            host::log("[MinecraftVC] Achievements pressed (no LCE scene on this platform)");
+                        } else if (id == 3) {
+                            navigateForwardTo("HelpAndOptionsMenu1080.swf");
+                        } else if (id == 4) {
+                            navigateForwardTo("DLCMainMenu1080.swf");
+                        } else if (id == 5) {
+                            // UIScene_MainMenu's eControl_Exit:
+                            // RequestErrorMessage(IDS_WINDOWS_EXIT,
+                            // IDS_WARNING_ARCADE_TEXT) with Cancel then
+                            // OK, focus on Cancel. ExitGameReturned has
+                            // the buttons reversed, OK is the Decline
+                            // that runs app.ExitGame. Small delay so the
+                            // SFX plays before the process goes.
+                            presentDialogWithTitle_content_buttons_focusIndex_callback(
+                                MCLEStr(IDS_WINDOWS_EXIT),
+                                MCLEStr(IDS_WARNING_ARCADE_TEXT),
+                                { MCLEStr(IDS_CANCEL), MCLEStr(IDS_OK) },
+                                0,
+                                [=](MCLEDialogResult r) {
+                                    if (r != MCLEDialogResultDecline) return;
+                                    host::main_after(0.3, [=] {
+                                        host::log("[MinecraftVC] Exit Game confirmed, terminating");
+                                        exit(0);
+                                    });
+                                });
+                        }
+                    } else if (currentMenuSwf == "SaveMessage1080.swf") {
+                        // UIScene_SaveMessage::handlePress
+                        navigateToHomeMenu();
+                    } else if (currentMenuSwf == "DeathMenu1080.swf") {
+                        // UIScene_DeathMenu::handlePress: eAppAction_Respawn,
+                        // ConnectingProgress while the player respawns
+                        if (id == 0) {
+                            openConnectingProgress_respawn(IDS_PROGRESS_RESPAWNING, true);
+                            mcle_game_respawn();
+                        } else {
+                            requestExitGame();
+                        }
+                    } else if (currentMenuSwf == "PauseMenu1080.swf") {
+                        // UIScene_PauseMenu::handlePress
+                        switch (id) {
+                            // navigateBack, with its sound
+                            case 0: MCLEPlayUISFX("back"); resumeFromPause(); break;
+                            case 1: navigateForwardTo("HelpAndOptionsMenu1080.swf"); break;
+                            case 2: navigateForwardTo("LeaderboardMenu1080.swf"); break;
+                            case 4: {
+                                // PerformActionSaveGame: does the save exist?
+                                if (!mcle_storage_save_exists()) {
+                                    // flag a app action of save game
+                                    MCLECaptureThumbnailThen([this] { openSaveProgress(false); });
+                                    break;
+                                }
+                                // we need to ask if they are sure they want to
+                                // overwrite the existing game.
+                                // SaveGameDialogReturned saves on the second button.
+                                presentDialogWithTitle_content_buttons_focusIndex_callback(
+                                    MCLEStr(IDS_TITLE_SAVE_GAME),
+                                    MCLEStr(IDS_CONFIRM_SAVE_GAME),
+                                    { MCLEStr(IDS_CONFIRM_CANCEL), MCLEStr(IDS_CONFIRM_OK) },
+                                    0,
+                                    [this](MCLEDialogResult r) {
+                                        if (r == MCLEDialogResultDecline) {
+                                            MCLECaptureThumbnailThen([this] { openSaveProgress(false); });
+                                        }
+                                    });
+                                break;
+                            }
+                            case 5: requestExitGame(); break;
+                            // Achievements is the platform overlay
+                            default:
+                                host::log("[pause] button %d not wired yet", id);
+                                break;
+                        }
+                    } else if (currentMenuSwf ==
+                               "HelpAndOptionsMenu1080.swf") {
+                        // Mirrors UIScene_HelpAndOptionsMenu::handlePress
+                        // (Common/UI/UIScene_HelpAndOptionsMenu.cpp:208).
+                        // BUTTON_HAO_CHANGESKIN=0, HOWTOPLAY=1, CONTROLS=2,
+                        // SETTINGS=3, CREDITS=4. Each navigates to its own
+                        // UIScene whose getMoviePath returns the SWF
+                        // basename below (non-splitscreen, single-player
+                        // path, matching single-player iOS case).
+                        std::string target;
+                        switch (id) {
+                            case 0: target = "SkinSelectMenu1080.swf"; break;
+                            case 1: target = "HowToPlayMenu1080.swf"; break;
+                            case 2: target = "Controls1080.swf"; break;
+                            case 3: target = "SettingsMenu1080.swf"; break;
+                            case 4: target = "Credits1080.swf"; break;
+                        }
+                        if (!target.empty()) navigateForwardTo(target);
+                    } else if (currentMenuSwf ==
+                               "SettingsMenu1080.swf") {
+                        // Mirrors UIScene_SettingsMenu::handlePress
+                        // (Common/UI/UIScene_SettingsMenu.cpp:117). ids
+                        // jump from 2 to 4 on console because BUTTON_ALL
+                        // slot 3 is reserved. Reset to Defaults on id 6
+                        // opens a confirm dialog on console and calls
+                        // CMinecraftApp::SetDefaultOptions on OK
+                        // (Consoles_App.cpp:857+ sets MusicVolume=100,
+                        // SoundFXVolume=100, RenderDistance=16, Gamma=
+                        // 50, Difficulty=1, Autosave=2, Clouds=1, ...
+                        // across ~30 settings). The confirm
+                        // dialog is skipped for now and the reset runs immediately.
+                        std::string target;
+                        switch (id) {
+                            case 0: target = "SettingsOptionsMenu1080.swf"; break;
+                            case 1: target = "SettingsAudioMenu1080.swf"; break;
+                            case 2: target = "SettingsControlMenu1080.swf"; break;
+                            case 4: target = "SettingsGraphicsMenu1080.swf"; break;
+                            case 5: target = "SettingsUIMenu1080.swf"; break;
+                            case 6:
+                                // Console opens a confirm dialog
+                                // ("Reset to default settings?") before
+                                // applying. The same path runs
+                                // through presentDialogWithTitle...
+                                // and the reset only runs on Accept.
+                                // Title IDS_DEFAULTS_TITLE / body
+                                // IDS_DEFAULTS_TEXT per
+                                // strings_Misc.txt line 492-496.
+                                // UIScene_SettingsMenu: Cancel / OK, and
+                                // ResetDefaultsDialogReturned resets on OK
+                                presentDialogWithTitle_content_buttons_focusIndex_callback(
+                                    MCLEStr(IDS_DEFAULTS_TITLE),
+                                    MCLEStr(IDS_DEFAULTS_TEXT),
+                                    { MCLEStr(IDS_CONFIRM_CANCEL), MCLEStr(IDS_CONFIRM_OK) },
+                                    0,
+                                    [=](MCLEDialogResult r) {
+                                        if (r == MCLEDialogResultDecline) {
+                                            mcle_settings_reset_to_defaults(mcle_world_is_ticking());
+                                            // SetGameSettings applies each one,
+                                            // the ones read every tick follow
+                                            unsigned char music = mcle_settings_get(MCLE_SETTING_MusicVolume);
+                                            unsigned char sfx = mcle_settings_get(MCLE_SETTING_SoundFXVolume);
+                                            mcle_sound_update_music_volume(music / 100.0f);
+                                            mcle_sound_update_sfx_volume(sfx / 100.0f);
+                                            mcle_game_host_settings_changed();
+                                        }
+                                    });
+                                break;
+                        }
+                        if (!target.empty()) navigateForwardTo(target);
+                    }
+                }
+            }
+            // UIScene_Intro::handleInput: A skips the rest of the logos
+            if (!g_pending_dialog && (pressedNow & 0x00000001u) &&
+                currentMenuSwf == "Intro1080.swf") {
+                introNavigate();
+            }
+            // B button (code=1, mask 0x00000002). Priority order:
+            //   1. Dialog up -> Cancelled (regardless of which
+            //      underlying scene is showing), as in
+            //      UIScene_MessageBox::handleInput line 99-105.
+            //   2. Otherwise on a non-MainMenu scene -> back.
+            //   3. MainMenu B is a no-op (no scene to pop to).
+            // UIScene_HowToPlay::handleInput: A next page, X previous
+            if (!g_pending_dialog && currentMenuSwf == "HowToPlay1080.swf") {
+                if ((pressedNow & 0x00000001u) && g_htp_page + 1 != mcle_htp_num_pages()) {
+                    MCLEHowToPlayStartPage(g_htp_page + 1);
+                    mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+                } else if ((pressedNow & 0x00000004u) && g_htp_page > 0) {
+                    MCLEHowToPlayStartPage(g_htp_page - 1);
+                    mcle_audio_play_ui_sfx("press", 1.0f, 1.0f);
+                }
+            }
+            // UIScene_ControlsMenu::handleInput: A makes the press sound
+            // whatever it's on
+            if (!g_pending_dialog && (pressedNow & 0x00000001u) &&
+                currentMenuSwf == "Controls1080.swf") {
+                MCLEPlayUISFX("press");
+            }
+            // UIScene_LaunchMoreOptionsMenu::handleInput: LB and RB swap the tab
+            if (!g_pending_dialog && (pressedNow & (0x00000080u | 0x00000040u)) &&
+                currentMenuSwf == "LaunchMoreOptionsMenu1080.swf") {
+                MCLEMoreOptionsChangeTab();
+            }
+            // UIScene_LoadOrJoinMenu::handleInput: RB, and X on Windows64,
+            // are the focused save's options
+            if (!g_pending_dialog && (pressedNow & (0x00000040u | 0x00000004u)) &&
+                currentMenuSwf == "LoadOrJoinMenu1080.swf") {
+                loadOrJoinSaveOptions();
+            }
+            if (pressedNow & 0x00000002u) {
+                if (g_pending_dialog) {
+                    mcle_audio_play_ui_sfx("back", 1.0f, 1.0f);
+                    finishDialogWithResult(MCLEDialogResultCancelled);
+                } else if (currentMenuSwf == "DeathMenu1080.swf") {
+                    // UIScene_DeathMenu::handleInput swallows B
+                } else if (currentMenuSwf == "Intro1080.swf" ||
+                           currentMenuSwf == "SaveMessage1080.swf") {
+                    // UIScene_Intro and UIScene_SaveMessage::handleInput only take A
+                } else if (currentMenuSwf == "EndPoem1080.swf") {
+                    // UIScene_EndPoem::handleInput: on to eAppAction_Respawn,
+                    // ConnectingProgress while the player respawns
+                    if (!g_endpoem_ignore_input) {
+                        g_endpoem_ignore_input = true;
+                        mcle_audio_play_ui_sfx("back", 1.0f, 1.0f);
+                        // This just allows it to be shown
+                        mcle_tutorial_show_popup(true);
+                        g_world_won = false;
+                        openConnectingProgress_respawn(IDS_PROGRESS_RESPAWNING, true);
+                        mcle_game_respawn();
+                    }
+                } else if (currentMenuSwf == "PauseMenu1080.swf") {
+                    // UIScene_PauseMenu::handleInput: B goes back to the game
+                    mcle_audio_play_ui_sfx("back", 1.0f, 1.0f);
+                    resumeFromPause();
+                } else if (currentMenuSwf != "MainMenu1080.swf" &&
+                           currentMenuSwf != "FullscreenProgress1080.swf") {
+                    // FullscreenProgress has no cancel func for a save load
+                    host::log("[MinecraftVC] back from %s (stack depth %zu)",
+                              currentMenuSwf.c_str(),
+                              menuStack.size());
+                    mcle_audio_play_ui_sfx("back", 1.0f, 1.0f);
+                    if (MCLEIsSettingsCheckboxScene(currentMenuSwf)) MCLESettingsSetGameSettings();
+                    navigateBack();
+                }
+            }
+        }
+
+        // Ruffle owns the frame: advance the player, wgpu draws + presents.
+        ruffle_ios_player_tick(g_ruffle_player, g_frame_seconds);
+        // The scene after the intro has drawn, its white can go
+        if (g_intro_backdrop_shown && currentMenuSwf != "Intro1080.swf") {
+            platform::intro_backdrop_set_shown(false);
+            g_intro_backdrop_shown = false;
+        }
+    } else {
+        // Legacy Metal path (triangle + pink rect).
+        mcle_render_frame();
+    }
+}

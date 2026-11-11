@@ -1,0 +1,28 @@
+[package]
+name = "ruffle_android"
+version = "0.0.1"
+edition = "2021"
+description = "The iOS port's Ruffle bridge, built for Android."
+publish = false
+
+[lib]
+name = "ruffle_android"
+crate-type = ["staticlib"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"
+
+# Kept the same as ios/third_party/ruffle_ios/Cargo.toml, build.rs checks the rev
+[dependencies]
+swf                 = { git = "https://github.com/dtentiion/ruffle", rev = "ed72d5d25" }
+ruffle_render       = { git = "https://github.com/dtentiion/ruffle", rev = "ed72d5d25" }
+ruffle_core         = { git = "https://github.com/dtentiion/ruffle", rev = "ed72d5d25" }
+ruffle_common       = { git = "https://github.com/dtentiion/ruffle", rev = "ed72d5d25" }
+ruffle_render_wgpu  = { git = "https://github.com/dtentiion/ruffle", rev = "ed72d5d25" }
+wgpu                = "27"
+raw-window-handle   = "0.6"
+pollster            = "0.4"
+tracing             = { version = "0.1", features = ["max_level_trace", "release_max_level_trace"] }
+tracing-subscriber  = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter"] }

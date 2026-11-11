@@ -1,0 +1,117 @@
+plugins {
+    id 'com.android.application'
+}
+
+// keystore.properties stays out of the repo. Without one the release build
+// is signed with the debug key, so it still installs.
+def keystoreFile = rootProject.file('keystore.properties')
+def keystore = new Properties()
+if (keystoreFile.exists()) {
+    keystoreFile.withInputStream { keystore.load(it) }
+}
+
+android {
+    namespace 'com.legacy.mclce'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'com.legacy.mclce'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.0.1'
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('../CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreFile.exists()) {
+                storeFile file(keystore['storeFile'])
+                storePassword keystore['storePassword']
+                keyAlias keystore['keyAlias']
+                keyPassword keystore['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystoreFile.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// The launcher icon is the Windows64 build's, read out of the game source
+// so the image itself stays out of this repo
+abstract class LauncherIconTask extends DefaultTask {
+    @InputFile
+    abstract RegularFileProperty getIcon()
+
+    @OutputDirectory
+    abstract DirectoryProperty getOutputDir()
+
+    @TaskAction
+    void generate() {
+        File source = icon.get().asFile
+        byte[] data = source.bytes
+        def bytes = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        int count = bytes.getShort(4) & 0xffff
+        int offset = -1
+        for (int i = 0; i < count; i++) {
+            int entry = 6 + 16 * i
+            // The 256x256 one at 32 bits, its width is stored as 0
+            if ((data[entry] & 0xff) == 0 && (bytes.getShort(entry + 6) & 0xffff) == 32) {
+                offset = bytes.getInt(entry + 12)
+            }
+        }
+        if (offset < 0) throw new GradleException("no 256x256 image in ${source}")
+        // An uncompressed bitmap, bottom row first
+        int pixels = offset + bytes.getInt(offset)
+        def image = new java.awt.image.BufferedImage(256, 256, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        for (int y = 0; y < 256; y++) {
+            for (int x = 0; x < 256; x++) {
+                image.setRGB(x, 255 - y, bytes.getInt(pixels + (y * 256 + x) * 4))
+            }
+        }
+        [mdpi: 48, hdpi: 72, xhdpi: 96, xxhdpi: 144, xxxhdpi: 192].each { density, size ->
+            def scaled = new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            def graphics = scaled.createGraphics()
+            graphics.drawImage(image.getScaledInstance(size, size, java.awt.Image.SCALE_AREA_AVERAGING), 0, 0, null)
+            graphics.dispose()
+            File dir = new File(outputDir.get().asFile, "mipmap-${density}")
+            dir.mkdirs()
+            javax.imageio.ImageIO.write(scaled, 'png', new File(dir, 'ic_launcher.png'))
+        }
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        def task = tasks.register("launcherIcon${variant.name.capitalize()}", LauncherIconTask) {
+            icon = file('../ios/upstream/Minecraft.Client/Xbox/MinecraftWindows.ico')
+        }
+        variant.sources.res.addGeneratedSourceDirectory(task) { it.outputDir }
+    }
+}
